@@ -111,6 +111,7 @@ static struct Cuda {
     typeof(ggml_backend_cuda_init) *GGML_CALL backend_init;
     typeof(ggml_backend_cuda_split_buffer_type) *GGML_CALL split_buffer_type;
     typeof(ggml_backend_cuda_reg_devices) *GGML_CALL reg_devices;
+    typeof(ggml_backend_cuda_get_device_description) *GGML_CALL get_device_description;
     typeof(ggml_backend_cuda_get_device_memory) *GGML_CALL get_device_memory;
     typeof(ggml_backend_cuda_get_device_count) *GGML_CALL get_device_count;
     typeof(ggml_backend_cuda_unregister_host_buffer) *GGML_CALL unreg_host_buf;
@@ -727,6 +728,7 @@ static bool link_cuda_dso(const char *dso, const char *dir) {
     ok &= !!(ggml_cuda.backend_init = imp(lib, "ggml_backend_cuda_init"));
     ok &= !!(ggml_cuda.split_buffer_type = imp(lib, "ggml_backend_cuda_split_buffer_type"));
     ok &= !!(ggml_cuda.reg_devices = imp(lib, "ggml_backend_cuda_reg_devices"));
+    ok &= !!(ggml_cuda.get_device_description = imp(lib, "ggml_backend_cuda_get_device_description"));
     ok &= !!(ggml_cuda.get_device_memory = imp(lib, "ggml_backend_cuda_get_device_memory"));
     ok &= !!(ggml_cuda.get_device_count = imp(lib, "ggml_backend_cuda_get_device_count"));
     ok &= !!(ggml_cuda.unreg_host_buf = imp(lib, "ggml_backend_cuda_unregister_host_buffer"));
@@ -1005,6 +1007,12 @@ GGML_CALL int ggml_backend_cuda_reg_devices(void) {
     if (!llamafile_has_cuda())
         return 0;
     return ggml_cuda.reg_devices();
+}
+
+GGML_CALL void ggml_backend_cuda_get_device_description(int device, char * description, size_t description_size) {
+    if (!llamafile_has_cuda())
+        return;
+    return ggml_cuda.get_device_description(device, description, description_size);
 }
 
 GGML_CALL void ggml_backend_cuda_get_device_memory(int device, size_t *free, size_t *total) {
