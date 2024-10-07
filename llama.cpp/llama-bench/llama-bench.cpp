@@ -27,12 +27,18 @@
 #include "llama.cpp/cores.h"
 #include <libc/sysv/consts/hwcap.h>
 
+#include <sys/utsname.h>
+#include <sys/sysinfo.h>
+#include <unistd.h>
+
 #include "llama.cpp/ggml.h"
 #include "llama.cpp/llama.h"
 #include "llama.cpp/string.h"
 #include "llama.cpp/common.h"
 #include "llama.cpp/ggml-cuda.h"
 #include "llamafile/llamafile.h"
+
+#define SYSCONF(NAME) printf("%-24s %,ld\n", #NAME, sysconf(NAME))
 
 // utils
 static uint64_t get_time_ns() {
@@ -149,6 +155,26 @@ static std::string get_cpu_info() { // [jart]
         if (sysctlbyname("machdep.cpu.brand_string", cpu_name, &size, NULL, 0) != -1) {
             id = cpu_name;
         }
+
+        // TODO IF ARCH IS ARM
+        // Get number of performance cores on macos
+        int num_perf0_cpu;
+        size = sizeof(num_perf0_cpu);
+        if (sysctlbyname("hw.perflevel0.logicalcpu", &num_perf0_cpu, &size, NULL, 0) != -1) {
+            id += " ";
+            id += std::to_string(num_perf0_cpu);
+            id += "P Cores";
+        }
+
+        // Get number of efficiency cores on macos
+        int num_perf1_cpu;
+        size = sizeof(num_perf1_cpu);
+        if (sysctlbyname("hw.perflevel1.logicalcpu", &num_perf1_cpu, &size, NULL, 0) != -1) {
+            id += " ";
+            id += std::to_string(num_perf1_cpu);
+            id += "E Cores";
+        }
+
     }
 #endif
     id = replace_all(id, " 96-Cores", "");
@@ -204,6 +230,7 @@ static std::string get_gpu_info() {
     }
 #endif
     // TODO: other backends
+    // macos: get gpu cores `system_profiler -detailLevel basic SPDisplaysDataType | grep 'Total Number of Cores'`
     return id;
 }
 
@@ -1383,105 +1410,139 @@ int main(int argc, char ** argv) {
     cmd_params params = parse_cmd_params(argc, argv);
     FLAGS_READY = true;
 
+    printf("llama commit: %s\n", LLAMA_COMMIT);
+    printf("llama build number: %d\n", LLAMA_BUILD_NUMBER);
+    printf("llamafile version: %s\n", LLAMAFILE_VERSION_STRING);
+
+    printf("cpu info: %s\n", get_cpu_info().c_str());
+
+    struct utsname names;
+    if (uname(&names))
+        return 1;
+    printf("%-10s %`'s\n", "sysname", names.sysname);
+    printf("%-10s %`'s\n", "release", names.release);
+    printf("%-10s %`'s\n", "version", names.version);
+    printf("%-10s %`'s\n", "machine", names.machine);
+
+    struct sysinfo si;
+    char ibuf[21];
+    if (sysinfo(&si)) {
+        perror("sysinfo");
+        exit(1);
+    }
+    // Total RAM
+    // printf("total ram %d. memunit %d. mult: %d\n", si.totalram, si.mem_unit, si.totalram * si.mem_unit);
+    sizefmt(ibuf, si.totalram * si.mem_unit, 1024);
+    printf("%-16s %ld (%s)\n", "totalram", si.totalram, ibuf);
+
+    SYSCONF(_SC_NPROCESSORS_CONF);
+    SYSCONF(_SC_NPROCESSORS_ONLN);
+
+
     // initialize llama.cpp
-    if (!params.verbose) {
-        llama_log_set(llama_null_log_callback, NULL);
-    }
-    llama_backend_init();
-    llama_numa_init(params.numa);
+    // if (!params.verbose) {
+    //     llama_log_set(llama_null_log_callback, NULL);
+    // }
+    // llama_backend_init();
+    // llama_numa_init(params.numa);
 
-    // initialize printer
-    std::unique_ptr<printer> p;
-    switch (params.output_format) {
-        case CSV:
-            p.reset(new csv_printer());
-            break;
-        case JSON:
-            p.reset(new json_printer());
-            break;
-        case MARKDOWN:
-            p.reset(new markdown_printer());
-            break;
-        case SQL:
-            p.reset(new sql_printer());
-            break;
-        default:
-            assert(false);
-            exit(1);
-    }
-    p->fout = stdout;
-    p->print_header(params);
+    // // initialize printer
+    // std::unique_ptr<printer> p;
+    // switch (params.output_format) {
+    //     case CSV:
+    //         p.reset(new csv_printer());
+    //         break;
+    //     case JSON:
+    //         p.reset(new json_printer());
+    //         break;
+    //     case MARKDOWN:
+    //         p.reset(new markdown_printer());
+    //         break;
+    //     case SQL:
+    //         p.reset(new sql_printer());
+    //         break;
+    //     default:
+    //         assert(false);
+    //         exit(1);
+    // }
+    // p->fout = stdout;
+    // p->print_header(params);
 
-    std::vector<cmd_params_instance> params_instances = get_cmd_params_instances(params);
+    // std::vector<cmd_params_instance> params_instances = get_cmd_params_instances(params);
 
-    llama_model * lmodel = nullptr;
-    const cmd_params_instance * prev_inst = nullptr;
+    // llama_model * lmodel = nullptr;
+    // const cmd_params_instance * prev_inst = nullptr;
 
-    for (const auto & inst : params_instances) {
-        // keep the same model between tests when possible
-        if (!lmodel || !prev_inst || !inst.equal_mparams(*prev_inst)) {
-            if (lmodel) {
-                llama_free_model(lmodel);
-            }
+    // for (const auto & inst : params_instances) {
+    //     // keep the same model between tests when possible
+    //     if (!lmodel || !prev_inst || !inst.equal_mparams(*prev_inst)) {
+    //         if (lmodel) {
+    //             llama_free_model(lmodel);
+    //         }
 
-            lmodel = llama_load_model_from_file(inst.model.c_str(), inst.to_llama_mparams());
-            if (lmodel == NULL) {
-                fprintf(stderr, "%s: error: failed to load model '%s'\n", __func__, inst.model.c_str());
-                return 1;
-            }
-            prev_inst = &inst;
-        }
+    //         lmodel = llama_load_model_from_file(inst.model.c_str(), inst.to_llama_mparams());
+    //         if (lmodel == NULL) {
+    //             fprintf(stderr, "%s: error: failed to load model '%s'\n", __func__, inst.model.c_str());
+    //             return 1;
+    //         }
+    //         prev_inst = &inst;
+    //     }
 
-        llama_context * ctx = llama_new_context_with_model(lmodel, inst.to_llama_cparams());
-        if (ctx == NULL) {
-            fprintf(stderr, "%s: error: failed to create context with model '%s'\n", __func__, inst.model.c_str());
-            llama_free_model(lmodel);
-            return 1;
-        }
+    //     llama_context * ctx = llama_new_context_with_model(lmodel, inst.to_llama_cparams());
+    //     if (ctx == NULL) {
+    //         fprintf(stderr, "%s: error: failed to create context with model '%s'\n", __func__, inst.model.c_str());
+    //         llama_free_model(lmodel);
+    //         return 1;
+    //     }
 
-        test t(inst, lmodel, ctx);
+    //     test t(inst, lmodel, ctx);
 
-        llama_kv_cache_clear(ctx);
+    //     llama_kv_cache_clear(ctx);
 
-        // warmup run
-        if (t.n_prompt > 0) {
-            //test_prompt(ctx, std::min(t.n_batch, std::min(t.n_prompt, 32)), 0, t.n_batch, t.n_threads);
-            test_prompt(ctx, t.n_prompt, 0, t.n_batch, t.n_threads);
-        }
-        if (t.n_gen > 0) {
-            test_gen(ctx, 1, 0, t.n_threads);
-        }
+    //     // warmup run
+    //     if (t.n_prompt > 0) {
+    //         //test_prompt(ctx, std::min(t.n_batch, std::min(t.n_prompt, 32)), 0, t.n_batch, t.n_threads);
+    //         test_prompt(ctx, t.n_prompt, 0, t.n_batch, t.n_threads);
+    //     }
+    //     if (t.n_gen > 0) {
+    //         test_gen(ctx, 1, 0, t.n_threads);
+    //     }
 
-        for (int i = 0; i < params.reps; i++) {
-            llama_kv_cache_clear(ctx);
+    //     for (int i = 0; i < params.reps; i++) {
+    //         int n_sampled = 0;
+    //         llama_kv_cache_clear(ctx);
 
-            llamafile_govern(); // [jart] see docs in llamafile/govern.cpp
+    //         llamafile_govern(); // [jart] see docs in llamafile/govern.cpp
 
-            uint64_t t_start = get_time_ns();
+    //         uint64_t t_start = get_time_ns();
 
-            if (t.n_prompt > 0) {
-                test_prompt(ctx, t.n_prompt, 0, t.n_batch, t.n_threads);
-            }
-            if (t.n_gen > 0) {
-                test_gen(ctx, t.n_gen, t.n_prompt, t.n_threads);
-            }
+    //         if (t.n_prompt > 0) {
+    //             test_prompt(ctx, t.n_prompt, 0, t.n_batch, t.n_threads);
+    //         }
+    //         if (t.n_gen > 0) {
+    //             // test_gen(ctx, t.n_gen, t.n_prompt, t.n_threads);
+    //             n_sampled = test_gen_new(ctx, t.n_threads, gparams.sparams);
+    //         }
 
-            uint64_t t_ns = get_time_ns() - t_start;
-            t.samples_ns.push_back(t_ns);
-        }
+    //         uint64_t t_ns = get_time_ns() - t_start;
+    //         if (n_sampled > 0) {
+    //             printf("sampled %d tokens in %dns, so tokens per seconds is %.2f\n", n_sampled, t_ns, (float)n_sampled / t_ns * 1e9);
+    //         }
+    //         t.samples_ns.push_back(t_ns);
+    //     }
 
-        p->print_test(t);
+    //     p->print_test(t);
 
-        llama_print_timings(ctx);
+    //     llama_print_timings(ctx);
 
-        llama_free(ctx);
-    }
+    //     llama_free(ctx);
+    // }
 
-    llama_free_model(lmodel);
+    // llama_free_model(lmodel);
 
-    p->print_footer();
+    // p->print_footer();
 
-    llama_backend_free();
+    // llama_backend_free();
 
     return 0;
 }
