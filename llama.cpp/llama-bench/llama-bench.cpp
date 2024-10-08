@@ -20,6 +20,7 @@
 #include <string>
 #include <vector>
 #include <cosmo.h>
+#include <dlfcn.h>
 #include <libgen.h>
 #include <sys/stat.h>
 #include <sys/auxv.h>
@@ -32,13 +33,12 @@
 #include <unistd.h>
 
 #include "llama.cpp/ggml.h"
+#include "llama.cpp/ggml-metal.h"
 #include "llama.cpp/llama.h"
 #include "llama.cpp/string.h"
 #include "llama.cpp/common.h"
 #include "llama.cpp/ggml-cuda.h"
 #include "llamafile/llamafile.h"
-
-#define SYSCONF(NAME) printf("%-24s %,ld\n", #NAME, sysconf(NAME))
 
 // utils
 static uint64_t get_time_ns() {
@@ -150,6 +150,7 @@ static std::string get_cpu_info() { // [jart]
         }
     }
     if (IsXnu()) {
+        // TODO we can also do something similar to https://github.com/vladkens/macmon/blob/main/src/sources.rs#L424
         char cpu_name[128] = {0};
         size_t size = sizeof(cpu_name);
         if (sysctlbyname("machdep.cpu.brand_string", cpu_name, &size, NULL, 0) != -1) {
@@ -163,16 +164,16 @@ static std::string get_cpu_info() { // [jart]
         if (sysctlbyname("hw.perflevel0.logicalcpu", &num_perf0_cpu, &size, NULL, 0) != -1) {
             id += " ";
             id += std::to_string(num_perf0_cpu);
-            id += "P Cores";
+            id += "P";
         }
 
         // Get number of efficiency cores on macos
         int num_perf1_cpu;
         size = sizeof(num_perf1_cpu);
         if (sysctlbyname("hw.perflevel1.logicalcpu", &num_perf1_cpu, &size, NULL, 0) != -1) {
-            id += " ";
+            id += "+";
             id += std::to_string(num_perf1_cpu);
-            id += "E Cores";
+            id += "E";
         }
 
     }
@@ -205,33 +206,256 @@ static std::string get_cpu_info() { // [jart]
     return id;
 }
 
-static std::string get_gpu_info() {
-    std::string id;
-#ifdef GGML_USE_CUDA
-    int count = ggml_backend_cuda_get_device_count();
-    for (int i = 0; i < count; i++) {
-        char buf[128];
-        ggml_backend_cuda_get_device_description(i, buf, sizeof(buf));
-        id += buf;
-        if (i < count - 1) {
-            id += "/";
+#define MAX_STRING_LENGTH 256
+
+typedef struct {
+    char llamafile_version[MAX_STRING_LENGTH];
+    char llama_commit[MAX_STRING_LENGTH];
+} RuntimeInfo;
+
+typedef struct {
+    char kernel_type[MAX_STRING_LENGTH];
+    char kernel_release[MAX_STRING_LENGTH];
+    char version[MAX_STRING_LENGTH];
+    char system_architecture[MAX_STRING_LENGTH];
+    char cpu[MAX_STRING_LENGTH];
+    double ram_gb;
+} SystemInfo;
+
+typedef struct {
+    char name[MAX_STRING_LENGTH];
+    double total_memory_gb;
+    int core_count;
+    double capability;
+} GPUInfo;
+
+static void *imp(void *lib, const char *sym) {
+    void *fun = cosmo_dlsym(lib, sym);
+    if (!fun)
+        tinylog(__func__, ": error: failed to import symbol: ", sym, "\n", NULL);
+    return fun;
+}
+
+static struct Nvml {
+    int (*nvmlInit_v2)(void);
+    int (*nvmlDeviceGetCount_v2)(unsigned int *deviceCount);
+    int (*nvmlDeviceGetHandleByIndex_v2)(unsigned int index, void **device);
+    int (*nvmlDeviceGetTotalEnergyConsumption)(void *device, unsigned long long *energy);
+    int (*nvmlDeviceGetPowerUsage)(void *device, unsigned int *power);
+    // TODO? nvmlDeviceGetPowerManagementLimit or similar
+} test_nvml;
+
+static void get_nvml_info() {
+    printf("===== NVML information =====\n\n");
+    // TODO find
+    void *lib = cosmo_dlopen("/usr/lib/x86_64-linux-gnu/libnvidia-ml.so", RTLD_LAZY);
+
+    bool ok = true;
+
+    ok &= !!(test_nvml.nvmlInit_v2 = reinterpret_cast<int (*)(void)>(imp(lib, "nvmlInit_v2")));
+    ok &= !!(test_nvml.nvmlDeviceGetCount_v2 = reinterpret_cast<int (*)(unsigned int*)>(imp(lib, "nvmlDeviceGetCount_v2")));
+    ok &= !!(test_nvml.nvmlDeviceGetHandleByIndex_v2 = reinterpret_cast<int (*)(unsigned int, void**)>(imp(lib, "nvmlDeviceGetHandleByIndex_v2")));
+    ok &= !!(test_nvml.nvmlDeviceGetTotalEnergyConsumption = reinterpret_cast<int (*)(void*, unsigned long long*)>(imp(lib, "nvmlDeviceGetTotalEnergyConsumption")));
+    ok &= !!(test_nvml.nvmlDeviceGetPowerUsage = reinterpret_cast<int (*)(void*, unsigned int*)>(imp(lib, "nvmlDeviceGetPowerUsage")));
+
+    if (!ok) {
+        tinylog(__func__, ": error: not all nvml symbols could be imported\n", NULL);
+        cosmo_dlclose(lib);
+        return;
+    }
+
+    int status = test_nvml.nvmlInit_v2();
+    if (status != 0) {  // Assuming 0 is success, which is common for many APIs
+        tinylog(__func__, ": error: failed to initialize NVML\n", NULL);
+        cosmo_dlclose(lib);
+        return;
+    }
+    unsigned int device_count;
+    status = test_nvml.nvmlDeviceGetCount_v2(&device_count);
+    printf("Number of devices: %d\n", device_count);
+
+    for (int i = 0; i < device_count; i++) {
+        void *device;
+        status = test_nvml.nvmlDeviceGetHandleByIndex_v2(i, &device);
+        unsigned long long energy;
+        status = test_nvml.nvmlDeviceGetTotalEnergyConsumption(device, &energy);
+        printf("Energy: %llu\n", energy);
+        unsigned int power;
+        status = test_nvml.nvmlDeviceGetPowerUsage(device, &power);
+        printf("Power: %u\n", power);
+    }
+
+    printf("NVML initialized successfully\n");
+}
+
+typedef enum {
+  RSMI_AVERAGE_POWER = 0,            //!< Average Power
+  RSMI_CURRENT_POWER,                //!< Current / Instant Power
+  RSMI_INVALID_POWER = 0xFFFFFFFF    //!< Invalid / Undetected Power
+} RSMI_POWER_TYPE;
+
+static struct Rsmi {
+    int (*rsmi_init)(uint64_t init_flags);
+    int (*rsmi_num_monitor_devices)(uint32_t *num_devices);
+    int (*rsmi_dev_id_get)(uint32_t dv_ind, uint16_t *id);
+    int (*rsmi_dev_power_get)(uint32_t dv_ind, uint64_t *power, RSMI_POWER_TYPE *type);
+} test_rsmi;
+
+static void get_rocm_smi_info() {
+    printf("===== ROCm SMI information =====\n\n");
+    // TODO find
+    void *lib = cosmo_dlopen("/opt/rocm/lib/librocm_smi64.so", RTLD_LAZY);
+
+    bool ok = true;
+
+    // ok &= !!(test_rsmi.rsmi_init = imp(lib, "rsmi_init"));
+    // ok &= !!(test_rsmi.rsmi_dev_id_get = imp(lib, "rsmi_dev_id_get"));
+    ok &= !!(test_rsmi.rsmi_init = reinterpret_cast<int (*)(uint64_t)>(imp(lib, "rsmi_init")));
+    ok &= !!(test_rsmi.rsmi_num_monitor_devices = reinterpret_cast<int (*)(uint32_t*)>(imp(lib, "rsmi_num_monitor_devices")));
+    ok &= !!(test_rsmi.rsmi_dev_id_get = reinterpret_cast<int (*)(uint32_t, uint16_t*)>(imp(lib, "rsmi_dev_id_get")));
+    ok &= !!(test_rsmi.rsmi_dev_power_get = reinterpret_cast<int (*)(uint32_t, uint64_t*, RSMI_POWER_TYPE*)>(imp(lib, "rsmi_dev_power_get")));
+
+    if (!ok) {
+        tinylog(__func__, ": error: not all rocm smi symbols could be imported\n", NULL);
+        cosmo_dlclose(lib);
+        return;
+    }
+
+    int status = test_rsmi.rsmi_init(0);
+    if (status != 0) {  // Assuming 0 is success, which is common for many APIs
+        tinylog(__func__, ": error: failed to initialize ROCm SMI\n", NULL);
+        cosmo_dlclose(lib);
+        return;
+    }
+    uint32_t num_devices;
+    uint16_t dev_id;
+    uint64_t power;
+    RSMI_POWER_TYPE type;
+    status = test_rsmi.rsmi_num_monitor_devices(&num_devices);
+    printf("Number of devices: %d\n", num_devices);
+
+    for (int i = 0; i < num_devices; i++) {
+        status = test_rsmi.rsmi_dev_id_get(i, &dev_id);
+        printf("Device ID: %d\n", dev_id);
+        status = test_rsmi.rsmi_dev_power_get(i, &power, &type);
+        printf("Power: %lu. Type: %d\n", power, type);
+    }
+
+    printf("ROCm SMI initialized successfully\n");
+}
+
+static void get_runtime_info(RuntimeInfo* info) {
+    if (info == NULL) return;
+
+    strncpy(info->llamafile_version, LLAMAFILE_VERSION_STRING, MAX_STRING_LENGTH - 1);
+    strncpy(info->llama_commit, LLAMA_COMMIT, MAX_STRING_LENGTH - 1);
+
+    printf("\033[0;35m\n===== llamafile bench runtime information =====\n\n");
+    printf("%-20s \033[1m%s\033[22m\n", "llamafile version:", info->llamafile_version);
+    printf("%-20s %s\n", "llama.cpp commit:", info->llama_commit);
+    printf("\n===============================================\n\n\033[0m");
+}
+
+static void get_sys_info(SystemInfo* info) {
+    if (info == NULL) return;
+
+    struct utsname names;
+    if (uname(&names)) {
+        return;
+    }
+
+    struct sysinfo si;
+    if (sysinfo(&si)) {
+        return;
+    }
+
+    strncpy(info->kernel_type, names.sysname, MAX_STRING_LENGTH - 1);
+    strncpy(info->kernel_release, names.release, MAX_STRING_LENGTH - 1);
+    // TODO on darwin we might want to get from systemprofiler SPSoftwareDataType os_version
+    strncpy(info->version, names.version, MAX_STRING_LENGTH - 1);
+    strncpy(info->system_architecture, names.machine, MAX_STRING_LENGTH - 1);
+    
+    std::string cpu_info = get_cpu_info();
+    strncpy(info->cpu, cpu_info.c_str(), MAX_STRING_LENGTH - 1);
+
+    info->ram_gb = si.totalram * si.mem_unit / 1073741824.0;
+
+    printf("===== system information =====\n\n");
+    printf("%-20s %s\n", "Kernel Type:", info->kernel_type);
+    printf("%-20s %s\n", "Kernel Release:", info->kernel_release);
+    printf("%-20s %s\n", "Version:", info->version);
+    printf("%-20s %s\n", "System Architecture:", info->system_architecture);
+    printf("%-20s %s\n", "CPU:", info->cpu);
+    printf("%-20s %.2f GiB\n", "RAM:", info->ram_gb);
+    printf("\n===============================\n\n");
+}
+
+std::string exec(const char* cmd) {
+    std::array<char, 128> buffer;
+    std::string result;
+    std::unique_ptr<FILE, decltype(&pclose)> pipe(popen(cmd, "r"), pclose);
+    if (!pipe) {
+        throw std::runtime_error("popen() failed!");
+    }
+    while (fgets(buffer.data(), buffer.size(), pipe.get()) != nullptr) {
+        result += buffer.data();
+    }
+    return result;
+}
+
+static void get_gpu_info(GPUInfo* info) {
+    if (info == NULL) return;
+
+    if (llamafile_has_cuda()) {
+        int count = ggml_backend_cuda_get_device_count();
+        if (count > 0) {
+            struct ggml_cuda_device_properties props;
+            ggml_backend_cuda_get_device_properties(0, &props);
+
+            strncpy(info->name, props.name, MAX_STRING_LENGTH - 1);
+            info->total_memory_gb = props.totalGlobalMem / 1073741824.0;
+            info->core_count = props.multiProcessorCount;
+            info->capability = atof(props.compute);
+
+            printf("\033[0;32m===== GPU information =====\n\n");
+            printf("%-26s %s\n", "GPU Name:", info->name);
+            printf("%-26s %.2f GiB\n", "VRAM:", info->total_memory_gb);
+            printf("%-26s %d\n", "Streaming Multiprocessors:", info->core_count);
+            printf("%-26s %.1f\n", "CUDA Capability:", info->capability);
+            printf("\n============================\n\n\033[0m");
         }
     }
-#endif
-#ifdef GGML_USE_SYCL
-    int count = ggml_backend_sycl_get_device_count();
-    for (int i = 0; i < count; i++) {
-        char buf[128];
-        ggml_sycl_get_device_description(i, buf, sizeof(buf));
-        id += buf;
-        if (i < count - 1) {
-            id += "/";
+
+    if (llamafile_has_metal()) {
+        // TODO there is probably a cleaner way of doing this. we should only need to init once.
+        // this is probably the same issue why the other thing is init multiple time too
+        struct ggml_metal_device_properties props;
+
+        std::string command = "system_profiler SPDisplaysDataType | grep \"Total Number of Cores:\" | awk '{print $5}'";
+        std::string num_cores = exec(command.c_str());
+        props.core_count = std::stoi(num_cores);
+        
+        // Remove any trailing newline
+        if (!num_cores.empty() && num_cores[num_cores.length()-1] == '\n') {
+            num_cores.erase(num_cores.length()-1);
         }
+
+
+        ggml_backend_t result = ggml_backend_metal_init();
+
+        ggml_backend_metal_get_device_properties(result, &props);
+
+        printf("\033[0;32m===== GPU information =====\n\n");
+        printf("%-26s %s\n", "GPU Name:", props.name);
+        printf("%-26s %.2f GiB\n", "VRAM:", props.memory);
+        printf("%-26s %d\n", "Core Count:", props.core_count);
+        printf("%-26s %d\n", "Metal Version:", props.metal_version);
+        printf("%-26s %d\n", "GPU Family:", props.gpu_family);
+        printf("%-26s %d\n", "Common GPU Family:", props.gpu_family_common);
+        printf("\n============================\n\n\033[0m");
     }
-#endif
-    // TODO: other backends
+    // TODO: other backends (metal)
     // macos: get gpu cores `system_profiler -detailLevel basic SPDisplaysDataType | grep 'Total Number of Cores'`
-    return id;
 }
 
 // command line params
@@ -1390,10 +1614,10 @@ int main(int argc, char ** argv) {
     // try to set locale for unicode characters in markdown
     setlocale(LC_CTYPE, "C.UTF-8");  // [jart]
 
-    __warn_if_powersave();  // [jart]
-    if (!getenv("LLAMAFILE_TEMPERATURE_FILE") || !getenv("LLAMAFILE_TEMPERATURE_MAX"))
-        fprintf(stderr, "warning: don't know how to govern your cpu temperature; "
-                "consider setting the environment variables described in llamafile/govern.cpp\n");
+    // __warn_if_powersave();  // [jart]
+    // if (!getenv("LLAMAFILE_TEMPERATURE_FILE") || !getenv("LLAMAFILE_TEMPERATURE_MAX"))
+    //     fprintf(stderr, "warning: don't know how to govern your cpu temperature; "
+    //             "consider setting the environment variables described in llamafile/govern.cpp\n");
 
 // #if !defined(NDEBUG)
 //     fprintf(stderr, "warning: asserts enabled, performance may be affected\n");
@@ -1410,139 +1634,120 @@ int main(int argc, char ** argv) {
     cmd_params params = parse_cmd_params(argc, argv);
     FLAGS_READY = true;
 
-    printf("llama commit: %s\n", LLAMA_COMMIT);
-    printf("llama build number: %d\n", LLAMA_BUILD_NUMBER);
-    printf("llamafile version: %s\n", LLAMAFILE_VERSION_STRING);
+    get_rocm_smi_info();
 
-    printf("cpu info: %s\n", get_cpu_info().c_str());
+    RuntimeInfo runtime_info;
+    get_runtime_info(&runtime_info);
 
-    struct utsname names;
-    if (uname(&names))
-        return 1;
-    printf("%-10s %`'s\n", "sysname", names.sysname);
-    printf("%-10s %`'s\n", "release", names.release);
-    printf("%-10s %`'s\n", "version", names.version);
-    printf("%-10s %`'s\n", "machine", names.machine);
+    SystemInfo sys_info;
+    get_sys_info(&sys_info);
 
-    struct sysinfo si;
-    char ibuf[21];
-    if (sysinfo(&si)) {
-        perror("sysinfo");
-        exit(1);
-    }
-    // Total RAM
-    // printf("total ram %d. memunit %d. mult: %d\n", si.totalram, si.mem_unit, si.totalram * si.mem_unit);
-    sizefmt(ibuf, si.totalram * si.mem_unit, 1024);
-    printf("%-16s %ld (%s)\n", "totalram", si.totalram, ibuf);
-
-    SYSCONF(_SC_NPROCESSORS_CONF);
-    SYSCONF(_SC_NPROCESSORS_ONLN);
-
+    GPUInfo gpu_info;
+    get_gpu_info(&gpu_info);
 
     // initialize llama.cpp
-    // if (!params.verbose) {
-    //     llama_log_set(llama_null_log_callback, NULL);
-    // }
-    // llama_backend_init();
-    // llama_numa_init(params.numa);
+    if (!params.verbose) {
+        llama_log_set(llama_null_log_callback, NULL);
+    }
+    llama_backend_init();
+    llama_numa_init(params.numa);
 
-    // // initialize printer
-    // std::unique_ptr<printer> p;
-    // switch (params.output_format) {
-    //     case CSV:
-    //         p.reset(new csv_printer());
-    //         break;
-    //     case JSON:
-    //         p.reset(new json_printer());
-    //         break;
-    //     case MARKDOWN:
-    //         p.reset(new markdown_printer());
-    //         break;
-    //     case SQL:
-    //         p.reset(new sql_printer());
-    //         break;
-    //     default:
-    //         assert(false);
-    //         exit(1);
-    // }
-    // p->fout = stdout;
-    // p->print_header(params);
+    // initialize printer
+    std::unique_ptr<printer> p;
+    switch (params.output_format) {
+        case CSV:
+            p.reset(new csv_printer());
+            break;
+        case JSON:
+            p.reset(new json_printer());
+            break;
+        case MARKDOWN:
+            p.reset(new markdown_printer());
+            break;
+        case SQL:
+            p.reset(new sql_printer());
+            break;
+        default:
+            assert(false);
+            exit(1);
+    }
+    p->fout = stdout;
+    p->print_header(params);
 
-    // std::vector<cmd_params_instance> params_instances = get_cmd_params_instances(params);
+    std::vector<cmd_params_instance> params_instances = get_cmd_params_instances(params);
 
-    // llama_model * lmodel = nullptr;
-    // const cmd_params_instance * prev_inst = nullptr;
+    llama_model * lmodel = nullptr;
+    const cmd_params_instance * prev_inst = nullptr;
 
-    // for (const auto & inst : params_instances) {
-    //     // keep the same model between tests when possible
-    //     if (!lmodel || !prev_inst || !inst.equal_mparams(*prev_inst)) {
-    //         if (lmodel) {
-    //             llama_free_model(lmodel);
-    //         }
+    for (const auto & inst : params_instances) {
+        // keep the same model between tests when possible
+        if (!lmodel || !prev_inst || !inst.equal_mparams(*prev_inst)) {
+            if (lmodel) {
+                llama_free_model(lmodel);
+            }
 
-    //         lmodel = llama_load_model_from_file(inst.model.c_str(), inst.to_llama_mparams());
-    //         if (lmodel == NULL) {
-    //             fprintf(stderr, "%s: error: failed to load model '%s'\n", __func__, inst.model.c_str());
-    //             return 1;
-    //         }
-    //         prev_inst = &inst;
-    //     }
+            lmodel = llama_load_model_from_file(inst.model.c_str(), inst.to_llama_mparams());
+            if (lmodel == NULL) {
+                fprintf(stderr, "%s: error: failed to load model '%s'\n", __func__, inst.model.c_str());
+                return 1;
+            }
+            prev_inst = &inst;
+        }
 
-    //     llama_context * ctx = llama_new_context_with_model(lmodel, inst.to_llama_cparams());
-    //     if (ctx == NULL) {
-    //         fprintf(stderr, "%s: error: failed to create context with model '%s'\n", __func__, inst.model.c_str());
-    //         llama_free_model(lmodel);
-    //         return 1;
-    //     }
+        llama_context * ctx = llama_new_context_with_model(lmodel, inst.to_llama_cparams());
+        if (ctx == NULL) {
+            fprintf(stderr, "%s: error: failed to create context with model '%s'\n", __func__, inst.model.c_str());
+            llama_free_model(lmodel);
+            return 1;
+        }
 
-    //     test t(inst, lmodel, ctx);
+        test t(inst, lmodel, ctx);
 
-    //     llama_kv_cache_clear(ctx);
+        llama_kv_cache_clear(ctx);
 
-    //     // warmup run
-    //     if (t.n_prompt > 0) {
-    //         //test_prompt(ctx, std::min(t.n_batch, std::min(t.n_prompt, 32)), 0, t.n_batch, t.n_threads);
-    //         test_prompt(ctx, t.n_prompt, 0, t.n_batch, t.n_threads);
-    //     }
-    //     if (t.n_gen > 0) {
-    //         test_gen(ctx, 1, 0, t.n_threads);
-    //     }
+        // warmup run
+        if (t.n_prompt > 0) {
+            //test_prompt(ctx, std::min(t.n_batch, std::min(t.n_prompt, 32)), 0, t.n_batch, t.n_threads);
+            test_prompt(ctx, t.n_prompt, 0, t.n_batch, t.n_threads);
+        }
+        if (t.n_gen > 0) {
+            test_gen(ctx, 1, 0, t.n_threads);
+        }
 
-    //     for (int i = 0; i < params.reps; i++) {
-    //         int n_sampled = 0;
-    //         llama_kv_cache_clear(ctx);
+        for (int i = 0; i < params.reps; i++) {
+            int n_sampled = 0;
+            llama_kv_cache_clear(ctx);
 
-    //         llamafile_govern(); // [jart] see docs in llamafile/govern.cpp
+            llamafile_govern(); // [jart] see docs in llamafile/govern.cpp
 
-    //         uint64_t t_start = get_time_ns();
+            uint64_t t_start = get_time_ns();
 
-    //         if (t.n_prompt > 0) {
-    //             test_prompt(ctx, t.n_prompt, 0, t.n_batch, t.n_threads);
-    //         }
-    //         if (t.n_gen > 0) {
-    //             // test_gen(ctx, t.n_gen, t.n_prompt, t.n_threads);
-    //             n_sampled = test_gen_new(ctx, t.n_threads, gparams.sparams);
-    //         }
+            if (t.n_prompt > 0) {
+                test_prompt(ctx, t.n_prompt, 0, t.n_batch, t.n_threads);
+            }
+            if (t.n_gen > 0) {
+                test_gen(ctx, t.n_gen, t.n_prompt, t.n_threads);
+            }
 
-    //         uint64_t t_ns = get_time_ns() - t_start;
-    //         if (n_sampled > 0) {
-    //             printf("sampled %d tokens in %dns, so tokens per seconds is %.2f\n", n_sampled, t_ns, (float)n_sampled / t_ns * 1e9);
-    //         }
-    //         t.samples_ns.push_back(t_ns);
-    //     }
+            uint64_t t_ns = get_time_ns() - t_start;
+            if (n_sampled > 0) {
+                printf("sampled %d tokens in %dns, so tokens per seconds is %.2f\n", n_sampled, t_ns, (float)n_sampled / t_ns * 1e9);
+            }
+            t.samples_ns.push_back(t_ns);
+        }
 
-    //     p->print_test(t);
+        p->print_test(t);
 
-    //     llama_print_timings(ctx);
+        llama_print_timings(ctx);
 
-    //     llama_free(ctx);
-    // }
+        llama_free(ctx);
+    }
 
-    // llama_free_model(lmodel);
+    llama_free_model(lmodel);
 
-    // p->print_footer();
+    p->print_footer();
 
-    // llama_backend_free();
+    llama_backend_free();
 
     return 0;
 }
