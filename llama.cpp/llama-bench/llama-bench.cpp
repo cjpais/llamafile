@@ -236,6 +236,147 @@ static void *imp(void *lib, const char *sym) {
     return fun;
 }
 
+typedef void* CFStringRef;
+typedef void* CFDictionaryRef;
+typedef void* CFMutableDictionaryRef;
+typedef void* CFTypeRef;
+typedef void* CFArrayRef;
+typedef void* IOReportSubscriptionRef;
+typedef void* CVoidRef;
+
+static struct IOReport {
+    CFDictionaryRef (*IOReportCopyChannelsInGroup)(CFStringRef, CFStringRef, uint64_t, uint64_t, uint64_t);
+    IOReportSubscriptionRef (*IOReportCreateSubscription)(CVoidRef, CFMutableDictionaryRef, CFMutableDictionaryRef*, uint64_t, CFTypeRef);
+    CFDictionaryRef (*IOReportCreateSamples)(IOReportSubscriptionRef, CFMutableDictionaryRef, CFTypeRef);
+    CFDictionaryRef (*IOReportCreateSamplesDelta)(CFDictionaryRef, CFDictionaryRef, CFTypeRef);
+    CFStringRef (*IOReportChannelGetChannelName)(CFDictionaryRef);
+    int64_t (*IOReportSimpleGetIntegerValue)(CFDictionaryRef, int32_t);
+    CFStringRef (*IOReportChannelGetUnitLabel)(CFDictionaryRef);
+
+    CFMutableDictionaryRef (*CFDictionaryCreateMutableCopy)(CVoidRef, long, CFDictionaryRef);
+    long (*CFDictionaryGetCount)(CFDictionaryRef);
+    void (*CFShow)(CFTypeRef);
+    CVoidRef (*CFDictionaryGetValue)(CFDictionaryRef, CVoidRef);
+    CFStringRef (*CFStringCreateWithCString)(CVoidRef, const char*, int);
+    void (*CFRelease)(CFTypeRef); 
+    int (*CFArrayGetCount)(CFArrayRef);
+    CFTypeRef (*CFArrayGetValueAtIndex)(CFArrayRef, int);
+    bool (*CFStringGetCString)(CFStringRef, char *, int, int);
+} io_report;
+
+static void get_ioreport_info() {
+    printf("===== IOReport information =====\n\n");
+    
+    void *lib = cosmo_dlopen("/usr/lib/libIOReport.dylib", RTLD_LAZY);
+    if (!lib) {
+        tinylog(__func__, ": error: failed to open IOKit framework\n", NULL);
+        return;
+    }
+
+    bool ok = true;
+
+    printf("LOADING IOREPORT\n");
+
+    ok &= !!(io_report.IOReportCopyChannelsInGroup = (CFDictionaryRef (*)(CFStringRef, CFStringRef, uint64_t, uint64_t, uint64_t))imp(lib, "IOReportCopyChannelsInGroup"));
+    ok &= !!(io_report.IOReportCreateSubscription = (IOReportSubscriptionRef (*)(CVoidRef, CFMutableDictionaryRef, CFMutableDictionaryRef*, uint64_t, CFTypeRef))imp(lib, "IOReportCreateSubscription"));
+    ok &= !!(io_report.IOReportCreateSamples = (CFDictionaryRef (*)(IOReportSubscriptionRef, CFMutableDictionaryRef, CFTypeRef))imp(lib, "IOReportCreateSamples"));
+    ok &= !!(io_report.IOReportCreateSamplesDelta = (CFDictionaryRef (*)(CFDictionaryRef, CFDictionaryRef, CFTypeRef))imp(lib, "IOReportCreateSamplesDelta"));
+    ok &= !!(io_report.IOReportChannelGetChannelName = (CFStringRef (*)(CFDictionaryRef))imp(lib, "IOReportChannelGetChannelName"));
+    ok &= !!(io_report.IOReportSimpleGetIntegerValue = (int64_t (*)(CFDictionaryRef, int32_t))imp(lib, "IOReportSimpleGetIntegerValue"));
+    ok &= !!(io_report.IOReportChannelGetUnitLabel = (CFStringRef (*)(CFDictionaryRef))imp(lib, "IOReportChannelGetUnitLabel"));
+
+    ok &= !!(io_report.CFDictionaryCreateMutableCopy = (CFMutableDictionaryRef (*)(void*, long, CFDictionaryRef))imp(lib, "CFDictionaryCreateMutableCopy"));
+    ok &= !!(io_report.CFDictionaryGetCount = (long (*)(CFDictionaryRef))imp(lib, "CFDictionaryGetCount"));
+    ok &= !!(io_report.CFShow = (void (*)(CFTypeRef))imp(lib, "CFShow"));
+    ok &= !!(io_report.CFDictionaryGetValue = ( void* (*)(CFDictionaryRef,  void*))imp(lib, "CFDictionaryGetValue"));
+    ok &= !!(io_report.CFStringCreateWithCString = (CFStringRef (*)(CVoidRef, const char*, int))imp(lib, "CFStringCreateWithCString"));
+    ok &= !!(io_report.CFRelease = (void (*)(CFTypeRef))imp(lib, "CFRelease"));
+    ok &= !!(io_report.CFArrayGetCount = (int (*)(CFArrayRef))imp(lib, "CFArrayGetCount"));
+    ok &= !!(io_report.CFArrayGetValueAtIndex = (CFTypeRef (*)(CFArrayRef, int))imp(lib, "CFArrayGetValueAtIndex"));
+    ok &= !!(io_report.CFStringGetCString = (bool (*)(CFStringRef, char *, int, int))imp(lib, "CFStringGetCString"));
+
+
+    if (!ok) {
+        tinylog(__func__, ": error: not all IOReport symbols could be imported\n", NULL);
+        cosmo_dlclose(lib);
+        return;
+    }
+
+    printf("IOReport initialized successfully\n");
+
+    // copy all channels
+    printf("COPYING CHANNELS\n");
+    CFStringRef energy_str = io_report.CFStringCreateWithCString(NULL, "Energy Model", 0x08000100);
+    CFDictionaryRef channels = io_report.IOReportCopyChannelsInGroup(energy_str, NULL, 0, 0, 0);
+    io_report.CFRelease(energy_str);
+
+    CFMutableDictionaryRef channels_mut = io_report.CFDictionaryCreateMutableCopy(NULL, io_report.CFDictionaryGetCount(channels), channels);
+    io_report.CFRelease(channels);
+
+    // TODO do some shit
+    CFMutableDictionaryRef subscription;
+    IOReportSubscriptionRef s = io_report.IOReportCreateSubscription(NULL, channels_mut, &subscription, 0, NULL);
+
+    CFDictionaryRef sample_start = io_report.IOReportCreateSamples(s, channels_mut, NULL);
+    printf("Sleeping\n");
+    usleep(100000); // 100ms
+    printf("awoke\n");
+    CFDictionaryRef sample_end = io_report.IOReportCreateSamples(s, channels_mut, NULL);
+
+    CFDictionaryRef samp_delta = io_report.IOReportCreateSamplesDelta(sample_start, sample_end, NULL);
+    io_report.CFRelease(sample_start);
+    io_report.CFRelease(sample_end);
+
+
+    CFStringRef key = io_report.CFStringCreateWithCString(NULL, "IOReportChannels", 0x08000100); 
+    CFArrayRef report = io_report.CFDictionaryGetValue(samp_delta, key);
+    io_report.CFRelease(key);
+
+    int count = io_report.CFArrayGetCount(report);
+
+    for (int i = 0; i < count; i++) {
+        CFDictionaryRef item = io_report.CFArrayGetValueAtIndex(report, i);
+        CFStringRef name = io_report.IOReportChannelGetChannelName(item);
+        if (name) {
+            // create a buffer of 64 bytes
+            // TODO could use api's to get the length probably but seems unecessary.
+            char buffer[64];
+            bool success = io_report.CFStringGetCString(name, buffer, 64, 0x08000100);
+            if (!success) {
+                printf("Failed to get channel name\n");
+                break;
+            }
+
+                // get the unit label
+            CFStringRef unit = io_report.IOReportChannelGetUnitLabel(item);
+            char unit_buffer[64];
+            if (unit) {
+                bool success = io_report.CFStringGetCString(unit, unit_buffer, 64, 0x08000100);
+                if (!success) {
+                    printf("Failed to get unit label\n");
+                }
+                io_report.CFRelease(unit);
+            }
+
+            if (strcmp(buffer, "CPU Energy") == 0 || strcmp(buffer, "GPU Energy") == 0 || strstr(buffer, "ANE") != NULL) {
+                printf("FOUND WHAT WE WANTED\n");
+                uint64_t energy = io_report.IOReportSimpleGetIntegerValue(item, 0);
+                printf("Channel Name: %s\n", buffer);
+                printf("Energy: %llu unit %s power %f\n", energy, unit_buffer, (double)energy / 100); 
+            }
+        } else {
+            break;
+        }
+    }
+
+    io_report.CFRelease(channels_mut);
+    io_report.CFRelease(subscription);
+    io_report.CFRelease(s);
+    io_report.CFRelease(samp_delta);
+
+    cosmo_dlclose(lib);
+}
+
 static struct Nvml {
     int (*nvmlInit_v2)(void);
     int (*nvmlDeviceGetCount_v2)(unsigned int *deviceCount);
@@ -286,6 +427,7 @@ static void get_nvml_info() {
     }
 
     printf("NVML initialized successfully\n");
+    cosmo_dlclose(lib);
 }
 
 typedef enum {
@@ -342,6 +484,7 @@ static void get_rocm_smi_info() {
     }
 
     printf("ROCm SMI initialized successfully\n");
+    cosmo_dlclose(lib);
 }
 
 static void get_runtime_info(RuntimeInfo* info) {
@@ -1634,7 +1777,10 @@ int main(int argc, char ** argv) {
     cmd_params params = parse_cmd_params(argc, argv);
     FLAGS_READY = true;
 
-    get_rocm_smi_info();
+    // get_rocm_smi_info();
+    // get_nvml_info();
+    // test_cf();
+    get_ioreport_info();
 
     RuntimeInfo runtime_info;
     get_runtime_info(&runtime_info);
