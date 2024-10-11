@@ -40,6 +40,8 @@
 #include "llama.cpp/ggml-cuda.h"
 #include "llamafile/llamafile.h"
 
+#include "powersampler.h"
+
 // utils
 static uint64_t get_time_ns() {
     using clock = std::chrono::high_resolution_clock;
@@ -228,264 +230,6 @@ typedef struct {
     int core_count;
     double capability;
 } GPUInfo;
-
-static void *imp(void *lib, const char *sym) {
-    void *fun = cosmo_dlsym(lib, sym);
-    if (!fun)
-        tinylog(__func__, ": error: failed to import symbol: ", sym, "\n", NULL);
-    return fun;
-}
-
-typedef void* CFStringRef;
-typedef void* CFDictionaryRef;
-typedef void* CFMutableDictionaryRef;
-typedef void* CFTypeRef;
-typedef void* CFArrayRef;
-typedef void* IOReportSubscriptionRef;
-typedef void* CVoidRef;
-
-static struct IOReport {
-    CFDictionaryRef (*IOReportCopyChannelsInGroup)(CFStringRef, CFStringRef, uint64_t, uint64_t, uint64_t);
-    IOReportSubscriptionRef (*IOReportCreateSubscription)(CVoidRef, CFMutableDictionaryRef, CFMutableDictionaryRef*, uint64_t, CFTypeRef);
-    CFDictionaryRef (*IOReportCreateSamples)(IOReportSubscriptionRef, CFMutableDictionaryRef, CFTypeRef);
-    CFDictionaryRef (*IOReportCreateSamplesDelta)(CFDictionaryRef, CFDictionaryRef, CFTypeRef);
-    CFStringRef (*IOReportChannelGetChannelName)(CFDictionaryRef);
-    int64_t (*IOReportSimpleGetIntegerValue)(CFDictionaryRef, int32_t);
-    CFStringRef (*IOReportChannelGetUnitLabel)(CFDictionaryRef);
-
-    CFMutableDictionaryRef (*CFDictionaryCreateMutableCopy)(CVoidRef, long, CFDictionaryRef);
-    long (*CFDictionaryGetCount)(CFDictionaryRef);
-    void (*CFShow)(CFTypeRef);
-    CVoidRef (*CFDictionaryGetValue)(CFDictionaryRef, CVoidRef);
-    CFStringRef (*CFStringCreateWithCString)(CVoidRef, const char*, int);
-    void (*CFRelease)(CFTypeRef); 
-    int (*CFArrayGetCount)(CFArrayRef);
-    CFTypeRef (*CFArrayGetValueAtIndex)(CFArrayRef, int);
-    bool (*CFStringGetCString)(CFStringRef, char *, int, int);
-} io_report;
-
-static void get_ioreport_info() {
-    printf("===== IOReport information =====\n\n");
-    
-    void *lib = cosmo_dlopen("/usr/lib/libIOReport.dylib", RTLD_LAZY);
-    if (!lib) {
-        tinylog(__func__, ": error: failed to open IOKit framework\n", NULL);
-        return;
-    }
-
-    bool ok = true;
-
-    printf("LOADING IOREPORT\n");
-
-    ok &= !!(io_report.IOReportCopyChannelsInGroup = (CFDictionaryRef (*)(CFStringRef, CFStringRef, uint64_t, uint64_t, uint64_t))imp(lib, "IOReportCopyChannelsInGroup"));
-    ok &= !!(io_report.IOReportCreateSubscription = (IOReportSubscriptionRef (*)(CVoidRef, CFMutableDictionaryRef, CFMutableDictionaryRef*, uint64_t, CFTypeRef))imp(lib, "IOReportCreateSubscription"));
-    ok &= !!(io_report.IOReportCreateSamples = (CFDictionaryRef (*)(IOReportSubscriptionRef, CFMutableDictionaryRef, CFTypeRef))imp(lib, "IOReportCreateSamples"));
-    ok &= !!(io_report.IOReportCreateSamplesDelta = (CFDictionaryRef (*)(CFDictionaryRef, CFDictionaryRef, CFTypeRef))imp(lib, "IOReportCreateSamplesDelta"));
-    ok &= !!(io_report.IOReportChannelGetChannelName = (CFStringRef (*)(CFDictionaryRef))imp(lib, "IOReportChannelGetChannelName"));
-    ok &= !!(io_report.IOReportSimpleGetIntegerValue = (int64_t (*)(CFDictionaryRef, int32_t))imp(lib, "IOReportSimpleGetIntegerValue"));
-    ok &= !!(io_report.IOReportChannelGetUnitLabel = (CFStringRef (*)(CFDictionaryRef))imp(lib, "IOReportChannelGetUnitLabel"));
-
-    ok &= !!(io_report.CFDictionaryCreateMutableCopy = (CFMutableDictionaryRef (*)(void*, long, CFDictionaryRef))imp(lib, "CFDictionaryCreateMutableCopy"));
-    ok &= !!(io_report.CFDictionaryGetCount = (long (*)(CFDictionaryRef))imp(lib, "CFDictionaryGetCount"));
-    ok &= !!(io_report.CFShow = (void (*)(CFTypeRef))imp(lib, "CFShow"));
-    ok &= !!(io_report.CFDictionaryGetValue = ( void* (*)(CFDictionaryRef,  void*))imp(lib, "CFDictionaryGetValue"));
-    ok &= !!(io_report.CFStringCreateWithCString = (CFStringRef (*)(CVoidRef, const char*, int))imp(lib, "CFStringCreateWithCString"));
-    ok &= !!(io_report.CFRelease = (void (*)(CFTypeRef))imp(lib, "CFRelease"));
-    ok &= !!(io_report.CFArrayGetCount = (int (*)(CFArrayRef))imp(lib, "CFArrayGetCount"));
-    ok &= !!(io_report.CFArrayGetValueAtIndex = (CFTypeRef (*)(CFArrayRef, int))imp(lib, "CFArrayGetValueAtIndex"));
-    ok &= !!(io_report.CFStringGetCString = (bool (*)(CFStringRef, char *, int, int))imp(lib, "CFStringGetCString"));
-
-
-    if (!ok) {
-        tinylog(__func__, ": error: not all IOReport symbols could be imported\n", NULL);
-        cosmo_dlclose(lib);
-        return;
-    }
-
-    printf("IOReport initialized successfully\n");
-
-    // copy all channels
-    printf("COPYING CHANNELS\n");
-    CFStringRef energy_str = io_report.CFStringCreateWithCString(NULL, "Energy Model", 0x08000100);
-    CFDictionaryRef channels = io_report.IOReportCopyChannelsInGroup(energy_str, NULL, 0, 0, 0);
-    io_report.CFRelease(energy_str);
-
-    CFMutableDictionaryRef channels_mut = io_report.CFDictionaryCreateMutableCopy(NULL, io_report.CFDictionaryGetCount(channels), channels);
-    io_report.CFRelease(channels);
-
-    // TODO do some shit
-    CFMutableDictionaryRef subscription;
-    IOReportSubscriptionRef s = io_report.IOReportCreateSubscription(NULL, channels_mut, &subscription, 0, NULL);
-
-    CFDictionaryRef sample_start = io_report.IOReportCreateSamples(s, channels_mut, NULL);
-    printf("Sleeping\n");
-    usleep(100000); // 100ms
-    printf("awoke\n");
-    CFDictionaryRef sample_end = io_report.IOReportCreateSamples(s, channels_mut, NULL);
-
-    CFDictionaryRef samp_delta = io_report.IOReportCreateSamplesDelta(sample_start, sample_end, NULL);
-    io_report.CFRelease(sample_start);
-    io_report.CFRelease(sample_end);
-
-
-    CFStringRef key = io_report.CFStringCreateWithCString(NULL, "IOReportChannels", 0x08000100); 
-    CFArrayRef report = io_report.CFDictionaryGetValue(samp_delta, key);
-    io_report.CFRelease(key);
-
-    int count = io_report.CFArrayGetCount(report);
-
-    for (int i = 0; i < count; i++) {
-        CFDictionaryRef item = io_report.CFArrayGetValueAtIndex(report, i);
-        CFStringRef name = io_report.IOReportChannelGetChannelName(item);
-        if (name) {
-            // create a buffer of 64 bytes
-            // TODO could use api's to get the length probably but seems unecessary.
-            char buffer[64];
-            bool success = io_report.CFStringGetCString(name, buffer, 64, 0x08000100);
-            if (!success) {
-                printf("Failed to get channel name\n");
-                break;
-            }
-
-                // get the unit label
-            CFStringRef unit = io_report.IOReportChannelGetUnitLabel(item);
-            char unit_buffer[64];
-            if (unit) {
-                bool success = io_report.CFStringGetCString(unit, unit_buffer, 64, 0x08000100);
-                if (!success) {
-                    printf("Failed to get unit label\n");
-                }
-                io_report.CFRelease(unit);
-            }
-
-            if (strcmp(buffer, "CPU Energy") == 0 || strcmp(buffer, "GPU Energy") == 0 || strstr(buffer, "ANE") != NULL) {
-                printf("FOUND WHAT WE WANTED\n");
-                uint64_t energy = io_report.IOReportSimpleGetIntegerValue(item, 0);
-                printf("Channel Name: %s\n", buffer);
-                printf("Energy: %llu unit %s power %f\n", energy, unit_buffer, (double)energy / 100); 
-            }
-        } else {
-            break;
-        }
-    }
-
-    io_report.CFRelease(channels_mut);
-    io_report.CFRelease(subscription);
-    io_report.CFRelease(s);
-    io_report.CFRelease(samp_delta);
-
-    cosmo_dlclose(lib);
-}
-
-static struct Nvml {
-    int (*nvmlInit_v2)(void);
-    int (*nvmlDeviceGetCount_v2)(unsigned int *deviceCount);
-    int (*nvmlDeviceGetHandleByIndex_v2)(unsigned int index, void **device);
-    int (*nvmlDeviceGetTotalEnergyConsumption)(void *device, unsigned long long *energy);
-    int (*nvmlDeviceGetPowerUsage)(void *device, unsigned int *power);
-    // TODO? nvmlDeviceGetPowerManagementLimit or similar
-} test_nvml;
-
-static void get_nvml_info() {
-    printf("===== NVML information =====\n\n");
-    // TODO find
-    void *lib = cosmo_dlopen("/usr/lib/x86_64-linux-gnu/libnvidia-ml.so", RTLD_LAZY);
-
-    bool ok = true;
-
-    ok &= !!(test_nvml.nvmlInit_v2 = reinterpret_cast<int (*)(void)>(imp(lib, "nvmlInit_v2")));
-    ok &= !!(test_nvml.nvmlDeviceGetCount_v2 = reinterpret_cast<int (*)(unsigned int*)>(imp(lib, "nvmlDeviceGetCount_v2")));
-    ok &= !!(test_nvml.nvmlDeviceGetHandleByIndex_v2 = reinterpret_cast<int (*)(unsigned int, void**)>(imp(lib, "nvmlDeviceGetHandleByIndex_v2")));
-    ok &= !!(test_nvml.nvmlDeviceGetTotalEnergyConsumption = reinterpret_cast<int (*)(void*, unsigned long long*)>(imp(lib, "nvmlDeviceGetTotalEnergyConsumption")));
-    ok &= !!(test_nvml.nvmlDeviceGetPowerUsage = reinterpret_cast<int (*)(void*, unsigned int*)>(imp(lib, "nvmlDeviceGetPowerUsage")));
-
-    if (!ok) {
-        tinylog(__func__, ": error: not all nvml symbols could be imported\n", NULL);
-        cosmo_dlclose(lib);
-        return;
-    }
-
-    int status = test_nvml.nvmlInit_v2();
-    if (status != 0) {  // Assuming 0 is success, which is common for many APIs
-        tinylog(__func__, ": error: failed to initialize NVML\n", NULL);
-        cosmo_dlclose(lib);
-        return;
-    }
-    unsigned int device_count;
-    status = test_nvml.nvmlDeviceGetCount_v2(&device_count);
-    printf("Number of devices: %d\n", device_count);
-
-    for (int i = 0; i < device_count; i++) {
-        void *device;
-        status = test_nvml.nvmlDeviceGetHandleByIndex_v2(i, &device);
-        unsigned long long energy;
-        status = test_nvml.nvmlDeviceGetTotalEnergyConsumption(device, &energy);
-        printf("Energy: %llu\n", energy);
-        unsigned int power;
-        status = test_nvml.nvmlDeviceGetPowerUsage(device, &power);
-        printf("Power: %u\n", power);
-    }
-
-    printf("NVML initialized successfully\n");
-    cosmo_dlclose(lib);
-}
-
-typedef enum {
-  RSMI_AVERAGE_POWER = 0,            //!< Average Power
-  RSMI_CURRENT_POWER,                //!< Current / Instant Power
-  RSMI_INVALID_POWER = 0xFFFFFFFF    //!< Invalid / Undetected Power
-} RSMI_POWER_TYPE;
-
-static struct Rsmi {
-    int (*rsmi_init)(uint64_t init_flags);
-    int (*rsmi_num_monitor_devices)(uint32_t *num_devices);
-    int (*rsmi_dev_id_get)(uint32_t dv_ind, uint16_t *id);
-    int (*rsmi_dev_power_get)(uint32_t dv_ind, uint64_t *power, RSMI_POWER_TYPE *type);
-} test_rsmi;
-
-static void get_rocm_smi_info() {
-    printf("===== ROCm SMI information =====\n\n");
-    // TODO find
-    void *lib = cosmo_dlopen("/opt/rocm/lib/librocm_smi64.so", RTLD_LAZY);
-
-    bool ok = true;
-
-    // ok &= !!(test_rsmi.rsmi_init = imp(lib, "rsmi_init"));
-    // ok &= !!(test_rsmi.rsmi_dev_id_get = imp(lib, "rsmi_dev_id_get"));
-    ok &= !!(test_rsmi.rsmi_init = reinterpret_cast<int (*)(uint64_t)>(imp(lib, "rsmi_init")));
-    ok &= !!(test_rsmi.rsmi_num_monitor_devices = reinterpret_cast<int (*)(uint32_t*)>(imp(lib, "rsmi_num_monitor_devices")));
-    ok &= !!(test_rsmi.rsmi_dev_id_get = reinterpret_cast<int (*)(uint32_t, uint16_t*)>(imp(lib, "rsmi_dev_id_get")));
-    ok &= !!(test_rsmi.rsmi_dev_power_get = reinterpret_cast<int (*)(uint32_t, uint64_t*, RSMI_POWER_TYPE*)>(imp(lib, "rsmi_dev_power_get")));
-
-    if (!ok) {
-        tinylog(__func__, ": error: not all rocm smi symbols could be imported\n", NULL);
-        cosmo_dlclose(lib);
-        return;
-    }
-
-    int status = test_rsmi.rsmi_init(0);
-    if (status != 0) {  // Assuming 0 is success, which is common for many APIs
-        tinylog(__func__, ": error: failed to initialize ROCm SMI\n", NULL);
-        cosmo_dlclose(lib);
-        return;
-    }
-    uint32_t num_devices;
-    uint16_t dev_id;
-    uint64_t power;
-    RSMI_POWER_TYPE type;
-    status = test_rsmi.rsmi_num_monitor_devices(&num_devices);
-    printf("Number of devices: %d\n", num_devices);
-
-    for (int i = 0; i < num_devices; i++) {
-        status = test_rsmi.rsmi_dev_id_get(i, &dev_id);
-        printf("Device ID: %d\n", dev_id);
-        status = test_rsmi.rsmi_dev_power_get(i, &power, &type);
-        printf("Power: %lu. Type: %d\n", power, type);
-    }
-
-    printf("ROCm SMI initialized successfully\n");
-    cosmo_dlclose(lib);
-}
 
 static void get_runtime_info(RuntimeInfo* info) {
     if (info == NULL) return;
@@ -1780,7 +1524,7 @@ int main(int argc, char ** argv) {
     // get_rocm_smi_info();
     // get_nvml_info();
     // test_cf();
-    get_ioreport_info();
+    // get_ioreport_info();
 
     RuntimeInfo runtime_info;
     get_runtime_info(&runtime_info);
@@ -1824,6 +1568,11 @@ int main(int argc, char ** argv) {
 
     llama_model * lmodel = nullptr;
     const cmd_params_instance * prev_inst = nullptr;
+
+    auto sampler = getPowerSampler(100);
+    if (sampler) {
+        sampler->start();
+    }
 
     for (const auto & inst : params_instances) {
         // keep the same model between tests when possible
@@ -1887,6 +1636,9 @@ int main(int argc, char ** argv) {
         llama_print_timings(ctx);
 
         llama_free(ctx);
+    }
+    if (sampler) {
+        sampler->stop();
     }
 
     llama_free_model(lmodel);

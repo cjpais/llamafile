@@ -1,0 +1,1 @@
+void get_rocm_smi_info();
