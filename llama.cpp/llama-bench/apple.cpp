@@ -12,15 +12,6 @@ static void *imp(void *lib, const char *sym) {
     return fun;
 }
 
-typedef void* CFStringRef;
-typedef void* CFDictionaryRef;
-typedef void* CFMutableDictionaryRef;
-typedef void* CFTypeRef;
-typedef void* CFArrayRef;
-typedef void* IOReportSubscriptionRef;
-typedef void* CVoidRef;
-typedef int CFIndex;
-
 static struct IOReport {
     CFDictionaryRef (*IOReportCopyChannelsInGroup)(CFStringRef, CFStringRef, uint64_t, uint64_t, uint64_t);
     IOReportSubscriptionRef (*IOReportCreateSubscription)(CVoidRef, CFMutableDictionaryRef, CFMutableDictionaryRef*, uint64_t, CFTypeRef);
@@ -44,11 +35,12 @@ static struct CoreFoundation {
     bool (*CFStringGetCString)(CFStringRef, char *, int, int);
 } core_foundation;
 
-void* load_lib_ioreport() {
+// TODO error handling.
+void init_apple_mon() {
     void *lib = cosmo_dlopen("/usr/lib/libIOReport.dylib", RTLD_LAZY);
     if (!lib) {
         tinylog(__func__, ": error: failed to open IOKit framework\n", NULL);
-        return NULL;
+        return;
     }
 
     bool ok = true;
@@ -66,7 +58,7 @@ void* load_lib_ioreport() {
     if (!ok) {
         tinylog(__func__, ": error: not all IOReport symbols could be imported\n", NULL);
         cosmo_dlclose(lib);
-        return NULL;
+        return;
     }
 
     printf("IOReport initialized successfully\n");
@@ -86,65 +78,10 @@ void* load_lib_ioreport() {
     if (!ok) {
         tinylog(__func__, ": error: not all CoreFoundation symbols could be imported\n", NULL);
         cosmo_dlclose(lib);
-        return NULL;
-    }
-
-    printf("CoreFoundation initialized successfully\n");
-    return lib;
-}
-
-CFMutableDictionaryRef get_power_channels() {
-    CFStringRef energy_str = core_foundation.CFStringCreateWithCString(NULL, "Energy Model", 0x08000100);
-    CFDictionaryRef channels = io_report.IOReportCopyChannelsInGroup(energy_str, NULL, 0, 0, 0);
-    core_foundation.CFRelease(energy_str);
-
-    CFMutableDictionaryRef channels_mut = core_foundation.CFDictionaryCreateMutableCopy(NULL, core_foundation.CFDictionaryGetCount(channels), channels);
-    core_foundation.CFRelease(channels);
-
-    return channels_mut;
-}
-
-IOReportSubscriptionRef get_subscription(CFMutableDictionaryRef channels_mut) {
-    CFMutableDictionaryRef subscription;
-    IOReportSubscriptionRef s = io_report.IOReportCreateSubscription(NULL, channels_mut, &subscription, 0, NULL);
-    return s;
-}
-
-CFArrayRef sample_power(IOReportSubscriptionRef sub, CFMutableDictionaryRef channels, int dur_ms) {
-    CFDictionaryRef sample_start = io_report.IOReportCreateSamples(sub, channels, NULL);
-    printf("Sleeping\n");
-    usleep(dur_ms * 1000); // Convert ms to microseconds
-    printf("Awoke\n");
-    CFDictionaryRef sample_end = io_report.IOReportCreateSamples(sub, channels, NULL);
-    CFDictionaryRef samp_delta = io_report.IOReportCreateSamplesDelta(sample_start, sample_end, NULL);
-
-    core_foundation.CFRelease(sample_start);
-    core_foundation.CFRelease(sample_end);
-
-    CFStringRef key = core_foundation.CFStringCreateWithCString(NULL, "IOReportChannels", 0x08000100);
-    CFArrayRef report = core_foundation.CFDictionaryGetValue(samp_delta, key);
-    CFArrayRef reportCopy = core_foundation.CFArrayCreateCopy(NULL, report);
-
-    core_foundation.CFRelease(key);
-    core_foundation.CFRelease(samp_delta);
-
-    return reportCopy;
-}
-
-static void print_channel_energy(const char* buffer, double energy, const char* unit) {
-    double joules;
-    if (strcmp(unit, "mJ") == 0) {
-        joules = energy / 1e3;
-    } else if (strcmp(unit, "uJ") == 0) {
-        joules = energy / 1e6;
-    } else if (strcmp(unit, "nJ") == 0) {
-        joules = energy / 1e9;
-    } else {
-        printf("Unknown unit: %s\n", unit);
         return;
     }
 
-    printf("%s Energy: %.0f. Energy: %.2fJ. Watts: %.2fW\n", buffer, energy, joules, joules);
+    printf("CoreFoundation initialized successfully\n");
 }
 
 static bool get_cstring_from_cfstring(CFStringRef cfString, char* buffer, size_t bufferSize) {
@@ -165,70 +102,111 @@ static char* get_unit_label(CFDictionaryRef item) {
     return unit;
 }
 
-static void process_channel(CFDictionaryRef item) {
-    CFStringRef n = io_report.IOReportChannelGetChannelName(item);
-    if (!n) {
-        printf("Failed to get channel name\n");
-        return;
-    }
-
-    char name[64] = {0};
-    if (!get_cstring_from_cfstring(n, name, sizeof(name))) {
-        printf("Failed to get channel name\n");
-        core_foundation.CFRelease(n);
-        return;
-    }
-
+static double process_channel(CFDictionaryRef item, const char* name) {
     char* unit = get_unit_label(item);
+    double energy = (double)io_report.IOReportSimpleGetIntegerValue(item, 0);
+    double energy_millijoules = 0;
 
     if (strcmp(name, "CPU Energy") == 0 || strcmp(name, "GPU Energy") == 0 || strstr(name, "ANE") != NULL) {
-        double energy = (double)io_report.IOReportSimpleGetIntegerValue(item, 0);
-        print_channel_energy(name, energy, unit);
+        if (strcmp(unit, "mJ") == 0) {
+            energy_millijoules = energy;
+        } else if (strcmp(unit, "uJ") == 0) {
+            energy_millijoules = energy / 1e3;
+        } else if (strcmp(unit, "nJ") == 0) {
+            energy_millijoules = energy / 1e6;
+        } else {
+            printf("Unknown unit: %s for channel: %s\n", unit, name);
+            return 0;
+        }
     }
 
-    core_foundation.CFRelease(n);
+    return energy_millijoules;
 }
 
-static void print_samples(CFArrayRef samples) {
-    CFIndex count = core_foundation.CFArrayGetCount(samples);
+
+void am_release(void* obj) {
+    core_foundation.CFRelease(obj);
+}
+
+void print_object(CFTypeRef obj) {
+    core_foundation.CFShow(obj);
+}
+
+CFMutableDictionaryRef get_power_channels() {
+    CFStringRef energy_str = core_foundation.CFStringCreateWithCString(NULL, "Energy Model", 0x08000100);
+    CFDictionaryRef channels = io_report.IOReportCopyChannelsInGroup(energy_str, NULL, 0, 0, 0);
+    core_foundation.CFRelease(energy_str);
+
+    CFMutableDictionaryRef channels_mut = core_foundation.CFDictionaryCreateMutableCopy(NULL, core_foundation.CFDictionaryGetCount(channels), channels);
+    core_foundation.CFRelease(channels);
+
+    return channels_mut;
+}
+
+IOReportSubscriptionRef get_subscription(CFMutableDictionaryRef channels_mut) {
+    CFMutableDictionaryRef subscription;
+    IOReportSubscriptionRef s = io_report.IOReportCreateSubscription(NULL, channels_mut, &subscription, 0, NULL);
+    return s;
+}
+
+// TODO need some way of freeing the CFDictionaryRef
+CFDictionaryRef sample_power(IOReportSubscriptionRef sub, CFMutableDictionaryRef channels) {
+    return io_report.IOReportCreateSamples(sub, channels, NULL);
+}
+
+CFDictionaryRef get_sample_delta(CFDictionaryRef sample_start, CFDictionaryRef sample_end) {
+    return io_report.IOReportCreateSamplesDelta(sample_start, sample_end, NULL);
+}
+
+double sample_to_millijoules(CFDictionaryRef sample) {
+    CFStringRef key = core_foundation.CFStringCreateWithCString(NULL, "IOReportChannels", 0x08000100);
+    CFArrayRef report = core_foundation.CFDictionaryGetValue(sample, key);
+    core_foundation.CFRelease(key);
+
+    CFIndex count = core_foundation.CFArrayGetCount(report);
+    double total_energy_millijoules = 0;
+
     for (CFIndex i = 0; i < count; i++) {
-        CFDictionaryRef item = core_foundation.CFArrayGetValueAtIndex(samples, i);
-        process_channel(item);
+        CFDictionaryRef item = core_foundation.CFArrayGetValueAtIndex(report, i);
+        CFStringRef n = io_report.IOReportChannelGetChannelName(item);
+        char name[64] = {0};
+        
+        if (!core_foundation.CFStringGetCString(n, name, sizeof(name), 0x08000100)) {
+            printf("Failed to get channel name\n");
+            core_foundation.CFRelease(n);
+            continue;
+        }
+
+        total_energy_millijoules += process_channel(item, name);
+        core_foundation.CFRelease(n);
     }
+
+    return total_energy_millijoules;
 }
 
-void get_ioreport_info() {
-    void* lib = load_lib_ioreport();
-    if (!lib) {
-        printf("Failed to load IOReport library\n");
-        return;
+double sample_delta_to_watts(CFDictionaryRef sample_delta, int delta_ms) {
+    CFStringRef key = core_foundation.CFStringCreateWithCString(NULL, "IOReportChannels", 0x08000100);
+    CFArrayRef report = core_foundation.CFDictionaryGetValue(sample_delta, key);
+    core_foundation.CFRelease(key);
+
+    CFIndex count = core_foundation.CFArrayGetCount(report);
+    double total_energy_joules = 0;
+
+    for (CFIndex i = 0; i < count; i++) {
+        CFDictionaryRef item = core_foundation.CFArrayGetValueAtIndex(report, i);
+        CFStringRef n = io_report.IOReportChannelGetChannelName(item);
+        char name[64] = {0};
+        
+        if (!core_foundation.CFStringGetCString(n, name, sizeof(name), 0x08000100)) {
+            printf("Failed to get channel name\n");
+            core_foundation.CFRelease(n);
+            continue;
+        }
+
+        total_energy_joules += process_channel(item, name) / 1000.0;
+        core_foundation.CFRelease(n);
     }
 
-
-    CFMutableDictionaryRef power_channel = get_power_channels();
-    if (!power_channel) {
-        printf("Failed to get power channels\n");
-        cosmo_dlclose(lib);
-        return;
-    }
-
-    IOReportSubscriptionRef sub = get_subscription(power_channel);
-    if (!sub) {
-        printf("Failed to create subscription\n");
-        core_foundation.CFRelease(power_channel);
-        cosmo_dlclose(lib);
-        return;
-    }
-
-    CFArrayRef sample;
-    for (int i = 0; i < 30; i++) {
-        sample = sample_power(sub, power_channel, 1000);
-        print_samples(sample);
-    }
-
-    core_foundation.CFRelease(power_channel);
-    core_foundation.CFRelease(sub);
-    core_foundation.CFRelease(sample);
-
-    cosmo_dlclose(lib);
+    // Convert total energy in joules to watts
+    return total_energy_joules / (delta_ms / 1000.0);
 }

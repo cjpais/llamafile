@@ -22,11 +22,12 @@ static struct Rsmi {
     int (*rsmi_num_monitor_devices)(uint32_t *num_devices);
     int (*rsmi_dev_id_get)(uint32_t dv_ind, uint16_t *id);
     int (*rsmi_dev_power_get)(uint32_t dv_ind, uint64_t *power, RSMI_POWER_TYPE *type);
+    int (*rsmi_dev_current_socket_power_get)(uint32_t dv_ind, uint64_t *power); // in uW
+    int (*rsmi_shut_down)(void);
 } rsmi;
 
-void get_rocm_smi_info() {
-    printf("===== ROCm SMI information =====\n\n");
-    // TODO find
+void rsmi_init() {
+    // TODO find across platforms.
     void *lib = cosmo_dlopen("/opt/rocm/lib/librocm_smi64.so", RTLD_LAZY);
 
     bool ok = true;
@@ -35,6 +36,8 @@ void get_rocm_smi_info() {
     ok &= !!(rsmi.rsmi_num_monitor_devices = reinterpret_cast<int (*)(uint32_t*)>(imp(lib, "rsmi_num_monitor_devices")));
     ok &= !!(rsmi.rsmi_dev_id_get = reinterpret_cast<int (*)(uint32_t, uint16_t*)>(imp(lib, "rsmi_dev_id_get")));
     ok &= !!(rsmi.rsmi_dev_power_get = reinterpret_cast<int (*)(uint32_t, uint64_t*, RSMI_POWER_TYPE*)>(imp(lib, "rsmi_dev_power_get")));
+    ok &= !!(rsmi.rsmi_dev_current_socket_power_get = reinterpret_cast<int (*)(uint32_t, uint64_t*)>(imp(lib, "rsmi_dev_current_socket_power_get")));
+    ok &= !!(rsmi.rsmi_shut_down = reinterpret_cast<int (*)()>(imp(lib, "rsmi_shut_down")));
 
     if (!ok) {
         tinylog(__func__, ": error: not all rocm smi symbols could be imported\n", NULL);
@@ -48,20 +51,36 @@ void get_rocm_smi_info() {
         cosmo_dlclose(lib);
         return;
     }
-    uint32_t num_devices;
-    uint16_t dev_id;
+}
+
+double rsmi_get_power() {
     uint64_t power;
     RSMI_POWER_TYPE type;
-    status = rsmi.rsmi_num_monitor_devices(&num_devices);
-    printf("Number of devices: %d\n", num_devices);
 
-    for (int i = 0; i < num_devices; i++) {
-        status = rsmi.rsmi_dev_id_get(i, &dev_id);
-        printf("Device ID: %d\n", dev_id);
-        status = rsmi.rsmi_dev_power_get(i, &power, &type);
-        printf("Power: %lu. Type: %d\n", power, type);
+    int status = rsmi.rsmi_dev_power_get(0, &power, &type);
+    if (status != 0) {
+        tinylog(__func__, ": error: failed to get power\n", NULL);
+        return 0;
     }
 
-    printf("ROCm SMI initialized successfully\n");
-    cosmo_dlclose(lib);
+    return (double)power;
+}
+
+double rsmi_get_power_instant() {
+    uint64_t power;
+
+    int status = rsmi.rsmi_dev_current_socket_power_get(0, &power);
+    if (status != 0) {
+        tinylog(__func__, ": error: failed to get power\n", NULL);
+        return 0;
+    }
+
+    return (double)power;
+}
+
+void rsmi_shutdown() {
+    int status = rsmi.rsmi_shut_down();
+    if (status != 0) {
+        tinylog(__func__, ": error: failed to shutdown ROCm SMI\n", NULL);
+    }
 }

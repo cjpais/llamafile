@@ -1569,10 +1569,7 @@ int main(int argc, char ** argv) {
     llama_model * lmodel = nullptr;
     const cmd_params_instance * prev_inst = nullptr;
 
-    auto sampler = getPowerSampler(100);
-    if (sampler) {
-        sampler->start();
-    }
+    auto sampler = getPowerSampler(300);
 
     for (const auto & inst : params_instances) {
         // keep the same model between tests when possible
@@ -1609,6 +1606,9 @@ int main(int argc, char ** argv) {
             test_gen(ctx, 1, 0, t.n_threads);
         }
 
+        if (sampler) {
+            sampler->start();
+        }
         for (int i = 0; i < params.reps; i++) {
             int n_sampled = 0;
             llama_kv_cache_clear(ctx);
@@ -1630,15 +1630,15 @@ int main(int argc, char ** argv) {
             }
             t.samples_ns.push_back(t_ns);
         }
+        if (sampler) {
+            sampler->stop();
+        }
 
         p->print_test(t);
 
         llama_print_timings(ctx);
 
         llama_free(ctx);
-    }
-    if (sampler) {
-        sampler->stop();
     }
 
     llama_free_model(lmodel);

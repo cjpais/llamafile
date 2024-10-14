@@ -11,6 +11,7 @@ static void *imp(void *lib, const char *sym) {
     return fun;
 }
 
+
 static struct Nvml {
     int (*nvmlInit_v2)(void);
     int (*nvmlDeviceGetCount_v2)(unsigned int *deviceCount);
@@ -45,6 +46,49 @@ bool nvml_init() {
         return false;
     }
 
+    return true;
+}
+
+// TODO should wrap these in a macro or function.
+bool nvml_get_device(nvmlDevice_t *device) {
+    if (!nvml.nvmlDeviceGetHandleByIndex_v2) {
+        tinylog(__func__, ": error: nvmlDeviceGetHandleByIndex_v2 not imported\n", NULL);
+        return false;
+    }
+
+    int status = nvml.nvmlDeviceGetHandleByIndex_v2(0, device);
+    if (status != 0) {
+        tinylog(__func__, ": error: failed to get device\n", NULL);
+        return false;
+    }
+    return true;
+}
+
+bool nvml_get_power_usage(nvmlDevice_t device, unsigned int *power) {
+    if (!nvml.nvmlDeviceGetPowerUsage) {
+        tinylog(__func__, ": error: nvmlDeviceGetPowerUsage not imported\n", NULL);
+        return false;
+    }
+
+    int status = nvml.nvmlDeviceGetPowerUsage(device, power);
+    if (status != 0) {
+        tinylog(__func__, ": error: failed to get power usage\n", NULL);
+        return false;
+    }
+    return true;
+}
+
+bool nvml_get_energy_consumption(nvmlDevice_t device, unsigned long long *energy) {
+    if (!nvml.nvmlDeviceGetTotalEnergyConsumption) {
+        tinylog(__func__, ": error: nvmlDeviceGetTotalEnergyConsumption not imported\n", NULL);
+        return false;
+    }
+
+    int status = nvml.nvmlDeviceGetTotalEnergyConsumption(device, energy);
+    if (status != 0) {
+        tinylog(__func__, ": error: failed to get energy consumption\n", NULL);
+        return false;
+    }
     return true;
 }
 

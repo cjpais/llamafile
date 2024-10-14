@@ -39,7 +39,7 @@ main(int argc, char* argv[])
     mallopt(M_GRANULARITY, 2 * 1024 * 1024);
     mallopt(M_MMAP_THRESHOLD, 16 * 1024 * 1024);
     mallopt(M_TRIM_THRESHOLD, 128 * 1024 * 1024);
-    FLAG_gpu = LLAMAFILE_GPU_DISABLE;
+    FLAG_gpu = LLAMAFILE_GPU_AUTO;
     llamafile_check_cpu();
     ShowCrashReports();
 
