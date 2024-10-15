@@ -43,7 +43,7 @@ void PowerSampler::stop() {
         double avg_milliwatts = total_milliwatts / samples_.size();
         printf("Average power consumption from samples: %.2f mW, %.2f W\n", avg_milliwatts, avg_milliwatts / 1000);
         printf("Total energy consumed: %.2f mJ, %.2fJ in %d ms\n", energy_consumed, energy_consumed / 1000,  sampling_time);
-        printf("Average power from energy consumed: %.2f mW, %.2f W \n", energy_consumed / sampling_time, energy_consumed / sampling_time / 1000);
+        printf("Average power from energy consumed: %.2f W \n", energy_consumed / sampling_time);
     }
 }
 
