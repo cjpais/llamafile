@@ -4,13 +4,29 @@
 #include "nvml.h"
 #include "llama.cpp/common.h"
 
+#define IMPORT_NVML_FUNCTION(func_name, func_type) \
+    ok &= !!(nvml.func_name = reinterpret_cast<func_type>(imp(lib, #func_name)))
+
+#define NVML_FUNCTION_CALL(func_name, error_msg, ...) \
+    do { \
+        if (!nvml.func_name) { \
+            tinylog(__func__, ": error: " #func_name " not imported\n", NULL); \
+            return false; \
+        } \
+        int status = nvml.func_name(__VA_ARGS__); \
+        if (status != 0) { \
+            tinylog(__func__, ": error: " error_msg "\n", NULL); \
+            return false; \
+        } \
+        return true; \
+    } while(0)
+
 static void *imp(void *lib, const char *sym) {
     void *fun = cosmo_dlsym(lib, sym);
     if (!fun)
         tinylog(__func__, ": error: failed to import symbol: ", sym, "\n", NULL);
     return fun;
 }
-
 
 static struct Nvml {
     int (*nvmlInit_v2)(void);
@@ -26,12 +42,12 @@ bool nvml_init() {
     void *lib = cosmo_dlopen("/usr/lib/x86_64-linux-gnu/libnvidia-ml.so", RTLD_LAZY);
     bool ok = true;
 
-    ok &= !!(nvml.nvmlInit_v2 = reinterpret_cast<int (*)(void)>(imp(lib, "nvmlInit_v2")));
-    ok &= !!(nvml.nvmlDeviceGetCount_v2 = reinterpret_cast<int (*)(unsigned int*)>(imp(lib, "nvmlDeviceGetCount_v2")));
-    ok &= !!(nvml.nvmlDeviceGetHandleByIndex_v2 = reinterpret_cast<int (*)(unsigned int, void**)>(imp(lib, "nvmlDeviceGetHandleByIndex_v2")));
-    ok &= !!(nvml.nvmlDeviceGetTotalEnergyConsumption = reinterpret_cast<int (*)(void*, unsigned long long*)>(imp(lib, "nvmlDeviceGetTotalEnergyConsumption")));
-    ok &= !!(nvml.nvmlDeviceGetPowerUsage = reinterpret_cast<int (*)(void*, unsigned int*)>(imp(lib, "nvmlDeviceGetPowerUsage")));
-    ok &= !!(nvml.nvmlShutdown = reinterpret_cast<int (*)(void)>(imp(lib, "nvmlShutdown")));
+    IMPORT_NVML_FUNCTION(nvmlInit_v2, int (*)(void));
+    IMPORT_NVML_FUNCTION(nvmlDeviceGetCount_v2, int (*)(unsigned int*));
+    IMPORT_NVML_FUNCTION(nvmlDeviceGetHandleByIndex_v2, int (*)(unsigned int, void**));
+    IMPORT_NVML_FUNCTION(nvmlDeviceGetTotalEnergyConsumption, int (*)(void*, unsigned long long*));
+    IMPORT_NVML_FUNCTION(nvmlDeviceGetPowerUsage, int (*)(void*, unsigned int*));
+    IMPORT_NVML_FUNCTION(nvmlShutdown, int (*)(void));
 
     if (!ok) {
         tinylog(__func__, ": error: not all nvml symbols could be imported\n", NULL);
@@ -39,102 +55,27 @@ bool nvml_init() {
         return false;
     }
 
-    int status = nvml.nvmlInit_v2();
-    if (status != 0) {  // Assuming 0 is success, which is common for many APIs
-        tinylog(__func__, ": error: failed to initialize NVML\n", NULL);
-        cosmo_dlclose(lib);
-        return false;
-    }
+    NVML_FUNCTION_CALL(nvmlInit_v2, "failed to initialize NVML");
 
     return true;
 }
 
-// TODO should wrap these in a macro or function.
 bool nvml_get_device(nvmlDevice_t *device) {
-    if (!nvml.nvmlDeviceGetHandleByIndex_v2) {
-        tinylog(__func__, ": error: nvmlDeviceGetHandleByIndex_v2 not imported\n", NULL);
-        return false;
-    }
-
-    int status = nvml.nvmlDeviceGetHandleByIndex_v2(0, device);
-    if (status != 0) {
-        tinylog(__func__, ": error: failed to get device\n", NULL);
-        return false;
-    }
-    return true;
+    NVML_FUNCTION_CALL(nvmlDeviceGetHandleByIndex_v2, "failed to get device", 0, device);
 }
 
 bool nvml_get_power_usage(nvmlDevice_t device, unsigned int *power) {
-    if (!nvml.nvmlDeviceGetPowerUsage) {
-        tinylog(__func__, ": error: nvmlDeviceGetPowerUsage not imported\n", NULL);
-        return false;
-    }
-
-    int status = nvml.nvmlDeviceGetPowerUsage(device, power);
-    if (status != 0) {
-        tinylog(__func__, ": error: failed to get power usage\n", NULL);
-        return false;
-    }
-    return true;
+    NVML_FUNCTION_CALL(nvmlDeviceGetPowerUsage, "failed to get power usage", device, power);
 }
 
 bool nvml_get_energy_consumption(nvmlDevice_t device, unsigned long long *energy) {
-    if (!nvml.nvmlDeviceGetTotalEnergyConsumption) {
-        tinylog(__func__, ": error: nvmlDeviceGetTotalEnergyConsumption not imported\n", NULL);
-        return false;
-    }
-
-    int status = nvml.nvmlDeviceGetTotalEnergyConsumption(device, energy);
-    if (status != 0) {
-        tinylog(__func__, ": error: failed to get energy consumption\n", NULL);
-        return false;
-    }
-    return true;
+    NVML_FUNCTION_CALL(nvmlDeviceGetTotalEnergyConsumption, "failed to get energy consumption", device, energy);
 }
 
 bool nvml_shutdown() {
-    // check the nvml library is initialized
-    // TODO validate this by calling shutdown before init
     if (!nvml.nvmlShutdown) {
         tinylog(__func__, ": error: NVML library not initialized\n", NULL);
         return false;
     }
-
-    int status = nvml.nvmlShutdown();
-    if (status != 0) {
-        tinylog(__func__, ": error: failed to shutdown NVML\n", NULL);
-        return false;
-    }
-    return true;
+    NVML_FUNCTION_CALL(nvmlShutdown, "failed to shutdown NVML");
 }
-
-// void get_nvml_info() {
-//     printf("===== NVML information =====\n\n");
-//     // TODO find
-
-
-
-//     int status = nvml.nvmlInit_v2();
-//     if (status != 0) {  // Assuming 0 is success, which is common for many APIs
-//         tinylog(__func__, ": error: failed to initialize NVML\n", NULL);
-//         cosmo_dlclose(lib);
-//         return;
-//     }
-//     unsigned int device_count;
-//     status = nvml.nvmlDeviceGetCount_v2(&device_count);
-//     printf("Number of devices: %d\n", device_count);
-
-//     for (int i = 0; i < device_count; i++) {
-//         void *device;
-//         status = nvml.nvmlDeviceGetHandleByIndex_v2(i, &device);
-//         unsigned long long energy;
-//         status = nvml.nvmlDeviceGetTotalEnergyConsumption(device, &energy);
-//         printf("Energy: %llu\n", energy);
-//         unsigned int power;
-//         status = nvml.nvmlDeviceGetPowerUsage(device, &power);
-//         printf("Power: %u\n", power);
-//     }
-
-//     printf("NVML initialized successfully\n");
-//     cosmo_dlclose(lib);
-// }
