@@ -19,6 +19,7 @@ PowerSampler::~PowerSampler() {
 void PowerSampler::start() {
     if (!is_sampling_) {
         is_sampling_ = true;
+        samples_.clear();
         sampling_start_time_ = timespec_real();
         energy_consumed_start_ = getEnergyConsumed();
         pthread_create(&sampling_thread_, nullptr, sampling_thread_func, this);
@@ -100,11 +101,11 @@ AMDPowerSampler::~AMDPowerSampler() {
 }
 
 double AMDPowerSampler::getInstantaneousPower() {
-    return rsmi_get_power();
+    return rsmi_get_power() / 1000000;
 }
 
 double AMDPowerSampler::getEnergyConsumed() {
-    return rsmi_get_power_instant();
+    return rsmi_dev_energy_count_get();
 }
 
 // ApplePowerSampler implementation
@@ -122,9 +123,7 @@ ApplePowerSampler::~ApplePowerSampler() {
 }
 
 double ApplePowerSampler::getInstantaneousPower() {
-    // Placeholder implementation
-    // print_object(sample);
-    return 0; // Example value
+    return 0;
 }
 
 // TODO this needs to be a void*?

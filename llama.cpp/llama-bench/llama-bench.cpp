@@ -1569,7 +1569,7 @@ int main(int argc, char ** argv) {
     llama_model * lmodel = nullptr;
     const cmd_params_instance * prev_inst = nullptr;
 
-    auto sampler = getPowerSampler(300);
+    auto sampler = getPowerSampler(100);
 
     for (const auto & inst : params_instances) {
         // keep the same model between tests when possible
