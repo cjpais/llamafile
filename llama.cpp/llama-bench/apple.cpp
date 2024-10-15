@@ -102,7 +102,7 @@ static char* get_unit_label(CFDictionaryRef item) {
     return unit;
 }
 
-static double process_channel(CFDictionaryRef item, const char* name) {
+static double get_item_energy_millijoules(CFDictionaryRef item, const char* name) {
     char* unit = get_unit_label(item);
     double energy = (double)io_report.IOReportSimpleGetIntegerValue(item, 0);
     double energy_millijoules = 0;
@@ -128,11 +128,11 @@ void am_release(void* obj) {
     core_foundation.CFRelease(obj);
 }
 
-void print_object(CFTypeRef obj) {
+void am_print_object(CFTypeRef obj) {
     core_foundation.CFShow(obj);
 }
 
-CFMutableDictionaryRef get_power_channels() {
+CFMutableDictionaryRef am_get_power_channels() {
     CFStringRef energy_str = core_foundation.CFStringCreateWithCString(NULL, "Energy Model", 0x08000100);
     CFDictionaryRef channels = io_report.IOReportCopyChannelsInGroup(energy_str, NULL, 0, 0, 0);
     core_foundation.CFRelease(energy_str);
@@ -143,22 +143,18 @@ CFMutableDictionaryRef get_power_channels() {
     return channels_mut;
 }
 
-IOReportSubscriptionRef get_subscription(CFMutableDictionaryRef channels_mut) {
+IOReportSubscriptionRef am_get_subscription(CFMutableDictionaryRef channels_mut) {
     CFMutableDictionaryRef subscription;
     IOReportSubscriptionRef s = io_report.IOReportCreateSubscription(NULL, channels_mut, &subscription, 0, NULL);
     return s;
 }
 
 // TODO need some way of freeing the CFDictionaryRef
-CFDictionaryRef sample_power(IOReportSubscriptionRef sub, CFMutableDictionaryRef channels) {
+CFDictionaryRef am_sample_power(IOReportSubscriptionRef sub, CFMutableDictionaryRef channels) {
     return io_report.IOReportCreateSamples(sub, channels, NULL);
 }
 
-CFDictionaryRef get_sample_delta(CFDictionaryRef sample_start, CFDictionaryRef sample_end) {
-    return io_report.IOReportCreateSamplesDelta(sample_start, sample_end, NULL);
-}
-
-double sample_to_millijoules(CFDictionaryRef sample) {
+double am_sample_to_millijoules(CFDictionaryRef sample) {
     CFStringRef key = core_foundation.CFStringCreateWithCString(NULL, "IOReportChannels", 0x08000100);
     CFArrayRef report = core_foundation.CFDictionaryGetValue(sample, key);
     core_foundation.CFRelease(key);
@@ -177,36 +173,9 @@ double sample_to_millijoules(CFDictionaryRef sample) {
             continue;
         }
 
-        total_energy_millijoules += process_channel(item, name);
+        total_energy_millijoules += get_item_energy_millijoules(item, name);
         core_foundation.CFRelease(n);
     }
 
     return total_energy_millijoules;
-}
-
-double sample_delta_to_watts(CFDictionaryRef sample_delta, int delta_ms) {
-    CFStringRef key = core_foundation.CFStringCreateWithCString(NULL, "IOReportChannels", 0x08000100);
-    CFArrayRef report = core_foundation.CFDictionaryGetValue(sample_delta, key);
-    core_foundation.CFRelease(key);
-
-    CFIndex count = core_foundation.CFArrayGetCount(report);
-    double total_energy_joules = 0;
-
-    for (CFIndex i = 0; i < count; i++) {
-        CFDictionaryRef item = core_foundation.CFArrayGetValueAtIndex(report, i);
-        CFStringRef n = io_report.IOReportChannelGetChannelName(item);
-        char name[64] = {0};
-        
-        if (!core_foundation.CFStringGetCString(n, name, sizeof(name), 0x08000100)) {
-            printf("Failed to get channel name\n");
-            core_foundation.CFRelease(n);
-            continue;
-        }
-
-        total_energy_joules += process_channel(item, name) / 1000.0;
-        core_foundation.CFRelease(n);
-    }
-
-    // Convert total energy in joules to watts
-    return total_energy_joules / (delta_ms / 1000.0);
 }

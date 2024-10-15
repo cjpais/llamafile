@@ -95,7 +95,8 @@ double rsmi_dev_energy_count_get() {
         return 0;
     }
 
-    return (double)power;
+    // this returns in microjoules
+    return (double)(power * counter_resolution);
 }
 
 double rsmi_get_power_instant() {

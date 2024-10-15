@@ -28,12 +28,11 @@ struct PowerSampler {
     void start();
     void stop();
 
+    // this returns the instantaneous power in microwatts
     virtual double getInstantaneousPower() = 0;
-    // TODO this is in millijoules?
+    
+    // this returns the energy consumed in millijoules
     virtual double getEnergyConsumed() = 0;
-    // virtual void startSampling() = 0;
-    // virtual void stopSampling() = 0;
-    // virtual PowerSample computeSample() = 0;
 
 private:
     static void* sampling_thread_func(void* arg);

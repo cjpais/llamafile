@@ -11,12 +11,12 @@ void init_apple_mon();
 
 void am_release(void* obj);
 
-void print_object(CFTypeRef obj);
+void am_print_object(CFTypeRef obj);
 
-CFMutableDictionaryRef get_power_channels();
+CFMutableDictionaryRef am_get_power_channels();
 
-IOReportSubscriptionRef get_subscription(CFMutableDictionaryRef power_channel);
+IOReportSubscriptionRef am_get_subscription(CFMutableDictionaryRef power_channel);
 
-CFDictionaryRef sample_power(IOReportSubscriptionRef sub, CFMutableDictionaryRef channels);
+CFDictionaryRef am_sample_power(IOReportSubscriptionRef sub, CFMutableDictionaryRef channels);
 
-double sample_to_millijoules(CFDictionaryRef sample);
+double am_sample_to_millijoules(CFDictionaryRef sample);

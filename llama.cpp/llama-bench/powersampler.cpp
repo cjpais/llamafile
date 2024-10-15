@@ -3,7 +3,6 @@
 
 #include "llamafile/llamafile.h"
 
-
 PowerSampler::PowerSampler(long sample_length_ms)
     : sample_length_ms_(sample_length_ms), is_sampling_(false) {
     pthread_mutex_init(&samples_mutex_, nullptr);
@@ -31,17 +30,20 @@ void PowerSampler::stop() {
         is_sampling_ = false;
         sampling_end_time_ = timespec_real();
         double energy_consumed_end = getEnergyConsumed();
+
+        long long sampling_time = timespec_tomillis(timespec_sub(sampling_end_time_, sampling_start_time_));
+        double energy_consumed = energy_consumed_end - energy_consumed_start_;
         pthread_join(sampling_thread_, nullptr);
 
         // average the samples
-        double total_watts = 0;
-        for (double watts : samples_) {
-            total_watts += watts;
+        double total_milliwatts = 0;
+        for (double milliwatts : samples_) {
+            total_milliwatts += milliwatts;
         }
-        double avg_watts = total_watts / samples_.size();
-        printf("Average power consumption from samples: %.2f W\n", avg_watts);
-        printf("Total energy consumed: %.2f J in %d ms\n", energy_consumed_end - energy_consumed_start_, timespec_tomillis(timespec_sub(sampling_end_time_, sampling_start_time_)));
-        printf("Average power from energy consumed: %.2f W\n", (energy_consumed_end - energy_consumed_start_) / (timespec_tomillis(timespec_sub(sampling_end_time_, sampling_start_time_)) / 1000));
+        double avg_milliwatts = total_milliwatts / samples_.size();
+        printf("Average power consumption from samples: %.2f mW, %.2f W\n", avg_milliwatts, avg_milliwatts / 1000);
+        printf("Total energy consumed: %.2f mJ, %.2fJ in %d ms\n", energy_consumed, energy_consumed / 1000,  sampling_time);
+        printf("Average power from energy consumed: %.2f mW, %.2f W \n", energy_consumed / sampling_time, energy_consumed / sampling_time / 1000);
     }
 }
 
@@ -52,7 +54,7 @@ void* PowerSampler::sampling_thread_func(void* arg) {
 
         // on the first iteration wait 100ms to make sure the system gets something reasonable for us.
         double power = sampler->getInstantaneousPower();
-        fprintf(stderr, "Power: %.2f W\n", power);
+        fprintf(stderr, "Power: %.2fmW %.2fW\n", power, power / 1000);
 
         pthread_mutex_lock(&sampler->samples_mutex_);
         sampler->samples_.push_back(power);
@@ -76,17 +78,16 @@ NvidiaPowerSampler::~NvidiaPowerSampler() {
     nvml_shutdown();
 }
 
-// TODO there is a more consise way of doing this for sure.
 double NvidiaPowerSampler::getInstantaneousPower() {
-    unsigned int power;
-    nvml_get_power_usage(device_, &power);
-    return (double)power / 1000.0;
+    unsigned int milliwatts;
+    nvml_get_power_usage(device_, &milliwatts);
+    return (double)milliwatts;
 }
 
 double NvidiaPowerSampler::getEnergyConsumed() {
-    unsigned long long energy;
-    nvml_get_energy_consumption(device_, &energy);
-    return (double)energy / 1000.0;
+    unsigned long long millijoules;
+    nvml_get_energy_consumption(device_, &millijoules);
+    return (double)millijoules;
 }
 
 // AMDPowerSampler implementation
@@ -101,11 +102,15 @@ AMDPowerSampler::~AMDPowerSampler() {
 }
 
 double AMDPowerSampler::getInstantaneousPower() {
-    return rsmi_get_power() / 1000000;
+    // rsmi get power returns in microwatts so to get milliwatts we divide by 1000
+    double milliwatts = rsmi_get_power() / 1000.0;
+    return milliwatts;
 }
 
 double AMDPowerSampler::getEnergyConsumed() {
-    return rsmi_dev_energy_count_get();
+    // rsmi get power returns in microjoules so to get millijoules we divide by 1000
+    double millijoules = rsmi_dev_energy_count_get() / 1000.0;
+    return millijoules;
 }
 
 // ApplePowerSampler implementation
@@ -113,8 +118,8 @@ double AMDPowerSampler::getEnergyConsumed() {
 ApplePowerSampler::ApplePowerSampler(long sample_length_ms)
     : PowerSampler(sample_length_ms) {
         init_apple_mon();
-        power_channel_ = get_power_channels();
-        sub_ = get_subscription(power_channel_);
+        power_channel_ = am_get_power_channels();
+        sub_ = am_get_subscription(power_channel_);
     }
 
 ApplePowerSampler::~ApplePowerSampler() {
@@ -128,10 +133,9 @@ double ApplePowerSampler::getInstantaneousPower() {
 
 // TODO this needs to be a void*?
 double ApplePowerSampler::getEnergyConsumed() {
-    CFDictionaryRef sample = sample_power(sub_, power_channel_);
-    double millijoules = sample_to_millijoules(sample);
-    printf("Millijoules: %.2f\n", millijoules);
-    return millijoules / 1000.0;
+    CFDictionaryRef sample = am_sample_power(sub_, power_channel_);
+    double millijoules = am_sample_to_millijoules(sample);
+    return millijoules;
 }
 
 // Function to get appropriate PowerSampler based on the system
