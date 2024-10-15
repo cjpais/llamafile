@@ -4,6 +4,22 @@
 #include "rsmi.h"
 #include "llama.cpp/common.h"
 
+#define IMPORT_RSMI_FUNCTION(func_name, func_type) \
+    ok &= !!(rsmi.func_name = (func_type)(imp(lib, #func_name)))
+
+#define RSMI_FUNCTION_CALL(func_name, error_msg, ...) \
+    do { \
+        if (!rsmi.func_name) { \
+            tinylog(__func__, ": error: " #func_name " not imported\n", NULL); \
+            return false; \
+        } \
+        int status = rsmi.func_name(__VA_ARGS__); \
+        if (status != 0) { \
+            tinylog(__func__, ": error: " error_msg "\n", NULL); \
+            return false; \
+        } \
+    } while(0)
+
 static void *imp(void *lib, const char *sym) {
     void *fun = cosmo_dlsym(lib, sym);
     if (!fun)
@@ -28,92 +44,62 @@ static struct Rsmi {
     int (*rsmi_shut_down)(void);
 } rsmi;
 
-void rsmi_init() {
-    // TODO find across platforms.
-    void *lib = cosmo_dlopen("/opt/rocm/lib/librocm_smi64.so", RTLD_LAZY);
-
+bool rsmi_init() {
+    void *lib = cosmo_dlopen("/opt/rocm/lib/librocm_smi64.so", RTLD_NOW);
     bool ok = true;
 
-    ok &= !!(rsmi.rsmi_init = reinterpret_cast<int (*)(uint64_t)>(imp(lib, "rsmi_init")));
-    ok &= !!(rsmi.rsmi_num_monitor_devices = reinterpret_cast<int (*)(uint32_t*)>(imp(lib, "rsmi_num_monitor_devices")));
-    ok &= !!(rsmi.rsmi_dev_id_get = reinterpret_cast<int (*)(uint32_t, uint16_t*)>(imp(lib, "rsmi_dev_id_get")));
-    ok &= !!(rsmi.rsmi_dev_power_get = reinterpret_cast<int (*)(uint32_t, uint64_t*, RSMI_POWER_TYPE*)>(imp(lib, "rsmi_dev_power_get")));
-    ok &= !!(rsmi.rsmi_dev_current_socket_power_get = reinterpret_cast<int (*)(uint32_t, uint64_t*)>(imp(lib, "rsmi_dev_current_socket_power_get")));
-    ok &= !!(rsmi.rsmi_dev_power_ave_get = reinterpret_cast<int (*)(uint32_t, uint32_t, uint64_t*)>(imp(lib, "rsmi_dev_power_ave_get")));
-    ok &= !!(rsmi.rsmi_dev_energy_count_get = reinterpret_cast<int (*)(uint32_t, uint64_t*, float*, uint64_t*)>(imp(lib, "rsmi_dev_energy_count_get")));
-    ok &= !!(rsmi.rsmi_shut_down = reinterpret_cast<int (*)()>(imp(lib, "rsmi_shut_down")));
+    IMPORT_RSMI_FUNCTION(rsmi_init, int (*)(uint64_t));
+    IMPORT_RSMI_FUNCTION(rsmi_num_monitor_devices, int (*)(uint32_t*));
+    IMPORT_RSMI_FUNCTION(rsmi_dev_id_get, int (*)(uint32_t, uint16_t*));
+    IMPORT_RSMI_FUNCTION(rsmi_dev_power_get, int (*)(uint32_t, uint64_t*, RSMI_POWER_TYPE*));
+    IMPORT_RSMI_FUNCTION(rsmi_dev_current_socket_power_get, int (*)(uint32_t, uint64_t*));
+    IMPORT_RSMI_FUNCTION(rsmi_dev_power_ave_get, int (*)(uint32_t, uint32_t, uint64_t*));
+    IMPORT_RSMI_FUNCTION(rsmi_dev_energy_count_get, int (*)(uint32_t, uint64_t*, float*, uint64_t*));
+    IMPORT_RSMI_FUNCTION(rsmi_shut_down, int (*)(void));
 
     if (!ok) {
         tinylog(__func__, ": error: not all rocm smi symbols could be imported\n", NULL);
         cosmo_dlclose(lib);
-        return;
+        return false;
     }
 
-    int status = rsmi.rsmi_init(0);
-    if (status != 0) {
-        tinylog(__func__, ": error: failed to initialize ROCm SMI\n", NULL);
-        cosmo_dlclose(lib);
-        return;
-    }
+    RSMI_FUNCTION_CALL(rsmi_init, "failed to initialize ROCm SMI", 0);
+    return true;
 }
 
-double rsmi_get_avg_power() {
-    uint64_t power;
-
-    int status = rsmi.rsmi_dev_power_ave_get(0, 0, &power);
-    if (status != 0) {
-        tinylog(__func__, ": error: failed to get power\n", NULL);
-        return 0;
-    }
-
-    return (double)power;
+bool rsmi_get_avg_power(double *power) {
+    uint64_t power_val;
+    RSMI_FUNCTION_CALL(rsmi_dev_power_ave_get, "failed to get average power", 0, 0, &power_val);
+    *power = (double)power_val;
+    return true;
 }
 
-double rsmi_get_power() {
-    uint64_t power;
+bool rsmi_get_power(double *power) {
+    uint64_t power_val;
     RSMI_POWER_TYPE type;
 
-    printf("rsmi_get_power\n");
-    int status = rsmi.rsmi_dev_power_get(0, &power, &type);
-    printf("rsmi_get_power status: %d\n", status);
-    if (status != 0) {
-        tinylog(__func__, ": error: failed to get power\n", NULL);
-        return 0;
-    }
-
-    return (double)power;
+    RSMI_FUNCTION_CALL(rsmi_dev_power_get, "failed to get power", 0, &power_val, &type);
+    *power = (double)power_val;
+    return true;
 }
 
-double rsmi_dev_energy_count_get() {
+bool rsmi_get_energy_count(double *energy) {
     uint64_t power;
     float counter_resolution;
     uint64_t timestamp;
-
-    int status = rsmi.rsmi_dev_energy_count_get(0, &power, &counter_resolution, &timestamp);
-    if (status != 0) {
-        tinylog(__func__, ": error: failed to get power\n", NULL);
-        return 0;
-    }
-
-    // this returns in microjoules
-    return (double)(power * counter_resolution);
+    RSMI_FUNCTION_CALL(rsmi_dev_energy_count_get, "failed to get energy count", 0, &power, &counter_resolution, &timestamp);
+    *energy = (double)(power * counter_resolution);
+    return true;
 }
 
-double rsmi_get_power_instant() {
-    uint64_t power;
-
-    int status = rsmi.rsmi_dev_current_socket_power_get(0, &power);
-    if (status != 0) {
-        tinylog(__func__, ": error: failed to get power\n", NULL);
-        return 0;
-    }
-
-    return (double)power;
+bool rsmi_get_power_instant(double *power) {
+    uint64_t power_val;
+    RSMI_FUNCTION_CALL(rsmi_dev_current_socket_power_get, "failed to get instant power", 0, &power_val);
+    *power = (double)power_val;
+    return true;
 }
 
-void rsmi_shutdown() {
-    int status = rsmi.rsmi_shut_down();
-    if (status != 0) {
-        tinylog(__func__, ": error: failed to shutdown ROCm SMI\n", NULL);
-    }
+bool rsmi_shutdown() {
+    RSMI_FUNCTION_CALL(rsmi_shut_down, "failed to shutdown ROCm SMI");
+    return true;
 }

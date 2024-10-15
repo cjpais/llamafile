@@ -1,11 +1,11 @@
-void rsmi_init();
+bool rsmi_init();
 
-double rsmi_get_power();
+bool rsmi_get_power(double *power);
 
-double rsmi_get_power_instant();
+bool rsmi_get_power_instant(double *power);
 
-double rsmi_get_avg_power();
+bool rsmi_get_avg_power(double *power);
 
-double rsmi_dev_energy_count_get();
+bool rsmi_get_energy_count(double *energy);
 
-void rsmi_shutdown();
+bool rsmi_shutdown();

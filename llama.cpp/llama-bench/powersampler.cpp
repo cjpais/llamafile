@@ -79,15 +79,19 @@ NvidiaPowerSampler::~NvidiaPowerSampler() {
 }
 
 double NvidiaPowerSampler::getInstantaneousPower() {
-    unsigned int milliwatts;
-    nvml_get_power_usage(device_, &milliwatts);
-    return (double)milliwatts;
+    unsigned int mw;
+    if (!nvml_get_power_usage(device_, &mw)) {
+        return 0.0;
+    }
+    return (double)mw;
 }
 
 double NvidiaPowerSampler::getEnergyConsumed() {
-    unsigned long long millijoules;
-    nvml_get_energy_consumption(device_, &millijoules);
-    return (double)millijoules;
+    unsigned long long mj;
+    if (!nvml_get_energy_consumption(device_, &mj)) {
+        return 0.0;
+    }
+    return (double)mj;
 }
 
 // AMDPowerSampler implementation
@@ -102,15 +106,21 @@ AMDPowerSampler::~AMDPowerSampler() {
 }
 
 double AMDPowerSampler::getInstantaneousPower() {
-    // rsmi get power returns in microwatts so to get milliwatts we divide by 1000
-    double milliwatts = rsmi_get_power() / 1000.0;
-    return milliwatts;
+    double uw;
+    if (!rsmi_get_power(&uw)) {
+        return 0.0;
+    }
+    // Convert microwatts to milliwatts
+    return uw / 1000.0;
 }
 
 double AMDPowerSampler::getEnergyConsumed() {
-    // rsmi get power returns in microjoules so to get millijoules we divide by 1000
-    double millijoules = rsmi_dev_energy_count_get() / 1000.0;
-    return millijoules;
+    double uj;
+    if (!rsmi_get_energy_count(&uj)) {
+        return 0.0;
+    }
+    // Convert microjoules to millijoules
+    return uj / 1000.0;
 }
 
 // ApplePowerSampler implementation
@@ -134,8 +144,8 @@ double ApplePowerSampler::getInstantaneousPower() {
 // TODO this needs to be a void*?
 double ApplePowerSampler::getEnergyConsumed() {
     CFDictionaryRef sample = am_sample_power(sub_, power_channel_);
-    double millijoules = am_sample_to_millijoules(sample);
-    return millijoules;
+    double mj = am_sample_to_millijoules(sample);
+    return mj;
 }
 
 // Function to get appropriate PowerSampler based on the system
