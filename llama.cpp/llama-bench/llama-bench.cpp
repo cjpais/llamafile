@@ -22,6 +22,8 @@
 #include <cosmo.h>
 #include <dlfcn.h>
 #include <libgen.h>
+#include <pthread.h>
+#include <mutex> // TODO replace with pthreads
 #include <sys/stat.h>
 #include <sys/auxv.h>
 #include <libc/intrin/x86.h>
@@ -726,6 +728,7 @@ static cmd_params parse_cmd_params(int argc, char ** argv) {
     // [jart] sort larger models first
     std::sort(params.model.begin(), params.model.end(), [](const std::string& a, const std::string& b) {
         struct stat statA, statB;
+        printf("a: %s\n", a.c_str());
         if (stat(a.c_str(), &statA)) {
             perror(a.c_str());
             exit(1);
@@ -943,10 +946,17 @@ struct test {
     bool embeddings;
     int n_prompt;
     int n_gen;
+    int reps;
+    mutable std::mutex t_gen_mutex;
+    std::atomic_bool test_completed{false};
+    volatile int curr_run;
+    volatile int t_gen; // this is the total number of tokens generated
+    double avg_power;
+    uint64_t t_start;
     std::string test_time;
     std::vector<uint64_t> samples_ns;
 
-    test(const cmd_params_instance & inst, const llama_model * lmodel, const llama_context * ctx) {
+    test(const cmd_params_instance & inst, const llama_model * lmodel, const llama_context * ctx, int repetitions) {
         model_filename = basename(strdup(inst.model.c_str()));  // [jart]
         char buf[128];
         llama_model_desc(lmodel, buf, sizeof(buf));
@@ -968,6 +978,13 @@ struct test {
         embeddings = inst.embeddings;
         n_prompt = inst.n_prompt;
         n_gen = inst.n_gen;
+        reps = repetitions;
+        test_completed = false;
+        curr_run = 0;
+        t_gen = 0;
+        avg_power = 0.0;
+        t_start = get_time_ns();
+
         // RFC 3339 date-time format
         time_t t = time(NULL);
         std::strftime(buf, sizeof(buf), "%FT%TZ", gmtime(&t));
@@ -1223,6 +1240,11 @@ struct json_printer : public printer {
     }
 };
 
+struct update_t_gen_column_args {
+    const test & t;
+    printer* p;
+};
+
 struct markdown_printer : public printer {
     std::vector<std::string> fields;
 
@@ -1288,11 +1310,14 @@ struct markdown_printer : public printer {
     void print_header(const cmd_params & params) override {
         // select fields to print
         fields.emplace_back("cpu_info"); // [jart]
+        // fields.emplace_back("gpu_info"); // [jart]
         fields.emplace_back("model_filename");
         // fields.emplace_back("model");
-        fields.emplace_back("size"); // [jart]
+        // fields.emplace_back("size"); // [jart]
         // fields.emplace_back("params"); // [jart]
         // fields.emplace_back("backend"); // [jart]
+        fields.emplace_back("avg time"); // [jart]
+        fields.emplace_back("avg power");
         bool is_cpu_backend = test::get_backend() == "CPU" || test::get_backend() == "BLAS";
         if (!is_cpu_backend) {
             fields.emplace_back("n_gpu_layers");
@@ -1333,8 +1358,10 @@ struct markdown_printer : public printer {
         if (params.embeddings.size() > 1 || params.embeddings != cmd_params_defaults.embeddings) {
             fields.emplace_back("embeddings");
         }
+        fields.emplace_back("tokens generated");
         fields.emplace_back("test");
         fields.emplace_back("t/s");
+        fields.emplace_back("t/s/watt");
 
         fprintf(fout, "|");
         for (const auto & field : fields) {
@@ -1386,6 +1413,25 @@ struct markdown_printer : public printer {
             } else if (field == "t/s") {
                 // snprintf(buf, sizeof(buf), "%.2f ± %.2f", t.avg_ts(), t.stdev_ts()); // [jart]
                 snprintf(buf, sizeof(buf), "%.2f", t.avg_ts());
+                value = buf;
+            } else if (field == "tokens generated") {
+                snprintf(buf, sizeof(buf), "%d / %d", t.t_gen + (t.curr_run * t.n_gen), t.n_gen * t.reps);
+                value = buf;
+            } else if (field == "t/s/watt") {
+                snprintf(buf, sizeof(buf), "%.2f", t.avg_ts() / t.avg_power);
+                value = buf;
+            } else if (field == "avg power") {
+                snprintf(buf, sizeof(buf), "%.2f W", t.avg_power);
+                value = buf;
+            } else if (field == "avg time") {
+                float avg_ms = t.avg_ns() / 1e6; 
+
+                if (avg_ms < 1000) {
+                    snprintf(buf, sizeof(buf), "%.2f ms", avg_ms);
+                } else {
+                    snprintf(buf, sizeof(buf), "%.2f s", avg_ms / 1e3);
+                }
+
                 value = buf;
             } else if (vmap.find(field) != vmap.end()) {
                 value = replace_all(replace_all(vmap.at(field), ".gguf", ""), ".llamafile", ""); // [jart]
@@ -1470,8 +1516,8 @@ static void test_prompt(llama_context * ctx, int n_prompt, int n_past, int n_bat
     llama_synchronize(ctx);
 }
 
-static void test_gen(llama_context * ctx, int n_gen, int n_past, int n_threads) {
-    llama_set_n_threads(ctx, n_threads, n_threads);
+static void test_gen(llama_context * ctx, int n_gen, int n_past, test * t) {
+    llama_set_n_threads(ctx, t->n_threads, t->n_threads);
 
     const llama_model * model = llama_get_model(ctx);
     const int32_t n_vocab = llama_n_vocab(model);
@@ -1482,6 +1528,7 @@ static void test_gen(llama_context * ctx, int n_gen, int n_past, int n_threads) 
         llama_decode(ctx, llama_batch_get_one(&token, 1, n_past + i, 0));
         llama_synchronize(ctx);
         token = std::rand() % n_vocab;
+        t->t_gen = i + 1;
     }
 }
 
@@ -1490,6 +1537,50 @@ static void llama_null_log_callback(enum ggml_log_level level, const char * text
     (void) text;
     (void) user_data;
 }
+
+void* print_num_generated_periodically(void* args) {
+    test * t = (test *) args;
+    while (1) { // Loop indefinitely until the thread is cancelled from outside
+        printf("num generated: %d\n", t->t_gen);
+        fflush(stdout); // Ensure the output is printed immediately
+        usleep(100 * 1000); // Sleep for 100 milliseconds
+    }
+    return NULL; // This line is technically unreachable in this example
+}
+
+// TODO handle the full lifecycle?
+void* update_t_gen_column(void* args) {
+    update_t_gen_column_args* argv = static_cast<update_t_gen_column_args*>(args);
+    const test & t = argv->t;
+    printer* p = argv->p;
+
+    p->print_test(t);
+    while (!t.test_completed) {
+        int t_gen_value;
+        {
+            std::lock_guard<std::mutex> lock(t.t_gen_mutex);
+            t_gen_value = t.t_gen;
+        }
+
+        // Move up to the previous line and clear it
+        printf("\033[A"); // Move up
+        printf("\033[2K"); // Clear the entire line
+
+        // Re-print the entire row with the updated t_gen value
+        p->print_test(t);
+
+        fflush(stdout);
+
+        usleep(100000); // sleep for 100ms (100,000 microseconds)
+    }
+    // TODO this last print is probably uncessary.
+    printf("\033[A"); // Move up
+    printf("\033[2K"); // Clear the entire line
+    p->print_test(t);
+    return nullptr;
+}
+
+
 
 __attribute__((__constructor__(101))) static void init(void) {
     FLAG_gpu = LLAMAFILE_GPU_DISABLE; // [jart]
@@ -1518,7 +1609,9 @@ int main(int argc, char ** argv) {
     fprintf(stderr, "warning: sanitizer enabled, performance may be affected\n");
 #endif
 
+    printf("Made it to the main function\n");
     cmd_params params = parse_cmd_params(argc, argv);
+    printf("Made it to the main function\n");
     FLAGS_READY = true;
 
     // get_rocm_smi_info();
@@ -1571,74 +1664,111 @@ int main(int argc, char ** argv) {
 
     auto sampler = getPowerSampler(100);
 
-    for (const auto & inst : params_instances) {
-        // keep the same model between tests when possible
-        if (!lmodel || !prev_inst || !inst.equal_mparams(*prev_inst)) {
-            if (lmodel) {
-                llama_free_model(lmodel);
+    pthread_t print_thread;
+
+
+    for (const auto & base_inst : params_instances) {
+        int num_gen = base_inst.n_prompt > 0 ? 1024 : 4096;
+        for (int context_size = 16; context_size <= num_gen; context_size *= 2) {
+            // TODO this is a total hack.
+            cmd_params_instance inst = base_inst;
+            if (base_inst.n_prompt > 0) {
+                inst.n_prompt = context_size;
+            } else {
+                inst.n_gen = context_size; 
             }
 
-            lmodel = llama_load_model_from_file(inst.model.c_str(), inst.to_llama_mparams());
-            if (lmodel == NULL) {
-                fprintf(stderr, "%s: error: failed to load model '%s'\n", __func__, inst.model.c_str());
+            // keep the same model between tests when possible
+            if (!lmodel || !prev_inst || !inst.equal_mparams(*prev_inst)) {
+                if (lmodel) {
+                    llama_free_model(lmodel);
+                }
+
+                lmodel = llama_load_model_from_file(inst.model.c_str(), inst.to_llama_mparams());
+                if (lmodel == NULL) {
+                    fprintf(stderr, "%s: error: failed to load model '%s'\n", __func__, inst.model.c_str());
+                    return 1;
+                }
+                prev_inst = &inst;
+            }
+
+
+            llama_context_params cparams = inst.to_llama_cparams();
+            cparams.n_ctx = context_size;
+
+            llama_context * ctx = llama_new_context_with_model(lmodel, cparams);
+            if (ctx == NULL) {
+                fprintf(stderr, "%s: error: failed to create context with model '%s'\n", __func__, inst.model.c_str());
+                llama_free_model(lmodel);
                 return 1;
             }
-            prev_inst = &inst;
-        }
 
-        llama_context * ctx = llama_new_context_with_model(lmodel, inst.to_llama_cparams());
-        if (ctx == NULL) {
-            fprintf(stderr, "%s: error: failed to create context with model '%s'\n", __func__, inst.model.c_str());
-            llama_free_model(lmodel);
-            return 1;
-        }
 
-        test t(inst, lmodel, ctx);
+            test t(inst, lmodel, ctx, params.reps);
+            // p->print_test(t);
 
-        llama_kv_cache_clear(ctx);
+            update_t_gen_column_args argv = {t, p.get()};
+            pthread_t update_thread;
+            int rc = pthread_create(&update_thread, NULL, update_t_gen_column, &argv);
+            if (rc) {
+                std::cerr << "Error creating pthread: " << rc << std::endl;
+                return EXIT_FAILURE;
+            }
 
-        // warmup run
-        if (t.n_prompt > 0) {
-            //test_prompt(ctx, std::min(t.n_batch, std::min(t.n_prompt, 32)), 0, t.n_batch, t.n_threads);
-            test_prompt(ctx, t.n_prompt, 0, t.n_batch, t.n_threads);
-        }
-        if (t.n_gen > 0) {
-            test_gen(ctx, 1, 0, t.n_threads);
-        }
 
-        if (sampler) {
-            sampler->start();
-        }
-        for (int i = 0; i < params.reps; i++) {
-            int n_sampled = 0;
             llama_kv_cache_clear(ctx);
 
-            llamafile_govern(); // [jart] see docs in llamafile/govern.cpp
-
-            uint64_t t_start = get_time_ns();
-
+            // warmup run
             if (t.n_prompt > 0) {
-                test_prompt(ctx, t.n_prompt, 0, t.n_batch, t.n_threads);
+                //test_prompt(ctx, std::min(t.n_batch, std::min(t.n_prompt, 32)), 0, t.n_batch, t.n_threads);
+                test_prompt(ctx, context_size, 0, t.n_batch, t.n_threads);
             }
             if (t.n_gen > 0) {
-                test_gen(ctx, t.n_gen, t.n_prompt, t.n_threads);
+                test_gen(ctx, 1, 0, &t);
             }
 
-            uint64_t t_ns = get_time_ns() - t_start;
-            if (n_sampled > 0) {
-                printf("sampled %d tokens in %dns, so tokens per seconds is %.2f\n", n_sampled, t_ns, (float)n_sampled / t_ns * 1e9);
+            if (sampler) {
+                sampler->start();
             }
-            t.samples_ns.push_back(t_ns);
+            for (int i = 0; i < params.reps; i++) {
+                t.curr_run = i;
+                llama_kv_cache_clear(ctx);
+
+                llamafile_govern(); // [jart] see docs in llamafile/govern.cpp
+
+                uint64_t t_start = get_time_ns();
+
+                if (t.n_prompt > 0) {
+                    test_prompt(ctx, context_size, 0, t.n_batch, t.n_threads);
+                }
+                if (t.n_gen > 0) {
+                    test_gen(ctx, context_size, t.n_prompt, &t);
+                }
+
+                uint64_t t_ns = get_time_ns() - t_start;
+                // printf("sampled %d tokens in %dns, so tokens per seconds is %.2f\n", context_size, t_ns, (float)context_size / t_ns * 1e9);
+                t.samples_ns.push_back(t_ns);
+            }
+            if (sampler) {
+                double power = sampler->stop();
+                t.avg_power = power;
+            }
+
+            t.test_completed = true;
+            pthread_join(update_thread, NULL);
+            // p->print_test(t);
+            // destroy the thread
+            // int result = pthread_cancel(print_thread);
+            // if (result == 0) {
+            //     printf("Thread was successfully cancelled\n");
+            // } else {
+            //     printf("Thread was not successfully cancelled\n");
+            // }
+
+            llama_print_timings(ctx);
+
+            llama_free(ctx);
         }
-        if (sampler) {
-            sampler->stop();
-        }
-
-        p->print_test(t);
-
-        llama_print_timings(ctx);
-
-        llama_free(ctx);
     }
 
     llama_free_model(lmodel);

@@ -26,7 +26,7 @@ struct PowerSampler {
     virtual ~PowerSampler();
 
     void start();
-    void stop();
+    double stop();
 
     // this returns the instantaneous power in microwatts
     virtual double getInstantaneousPower() = 0;

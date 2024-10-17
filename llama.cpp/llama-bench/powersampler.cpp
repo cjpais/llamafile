@@ -25,7 +25,7 @@ void PowerSampler::start() {
     }
 }
 
-void PowerSampler::stop() {
+double PowerSampler::stop() {
     if (is_sampling_) {
         is_sampling_ = false;
         sampling_end_time_ = timespec_real();
@@ -41,10 +41,21 @@ void PowerSampler::stop() {
             total_milliwatts += milliwatts;
         }
         double avg_milliwatts = total_milliwatts / samples_.size();
-        printf("Average power consumption from samples: %.2f mW, %.2f W\n", avg_milliwatts, avg_milliwatts / 1000);
-        printf("Total energy consumed: %.2f mJ, %.2fJ in %d ms\n", energy_consumed, energy_consumed / 1000,  sampling_time);
-        printf("Average power from energy consumed: %.2f W \n", energy_consumed / sampling_time);
+        double avg_watts = avg_milliwatts / 1e3;
+        double avg_watts_energy = energy_consumed / sampling_time;
+
+        if (FLAG_verbose) {
+            printf("Average power consumption from samples: %.2f mW, %.2f W\n", avg_milliwatts, avg_milliwatts / 1000);
+            printf("Total energy consumed: %.2f mJ, %.2fJ in %d ms\n", energy_consumed, energy_consumed / 1000,  sampling_time);
+            printf("Average power from energy consumed: %.2f W \n", energy_consumed / sampling_time);
+        }
+
+        // TODO decide on default..?
+        // pick the higher reading of the two
+        return (avg_watts > avg_watts_energy) ? avg_watts : avg_watts_energy;
     }
+
+    return 0;
 }
 
 void* PowerSampler::sampling_thread_func(void* arg) {
@@ -54,7 +65,7 @@ void* PowerSampler::sampling_thread_func(void* arg) {
 
         // on the first iteration wait 100ms to make sure the system gets something reasonable for us.
         double power = sampler->getInstantaneousPower();
-        fprintf(stderr, "Power: %.2fmW %.2fW\n", power, power / 1000);
+        // fprintf(stderr, "Power: %.2fmW %.2fW\n", power, power / 1000);
 
         pthread_mutex_lock(&sampler->samples_mutex_);
         sampler->samples_.push_back(power);
@@ -137,6 +148,7 @@ ApplePowerSampler::~ApplePowerSampler() {
     am_release(sub_);
 }
 
+// TODO we can store a temp var for the last reading and then return the difference
 double ApplePowerSampler::getInstantaneousPower() {
     return 0;
 }
