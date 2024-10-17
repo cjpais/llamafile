@@ -1771,6 +1771,7 @@ int main(int argc, char ** argv) {
     // initialize llama.cpp
     if (!params.verbose) {
         llama_log_set(llama_null_log_callback, NULL);
+        ggml_backend_metal_log_set_callback(llama_null_log_callback, NULL);
     }
     llama_backend_init();
     llama_numa_init(params.numa);
