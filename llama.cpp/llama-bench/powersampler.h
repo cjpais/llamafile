@@ -69,6 +69,8 @@ protected:
 struct ApplePowerSampler : public PowerSampler {
     CFMutableDictionaryRef power_channel_;
     IOReportSubscriptionRef sub_;
+    long long last_sample_time_;
+    double last_sample_mj_;
 
     ApplePowerSampler(long sample_length_ms);
     ~ApplePowerSampler() override;

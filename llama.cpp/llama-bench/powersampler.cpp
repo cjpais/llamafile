@@ -141,6 +141,8 @@ ApplePowerSampler::ApplePowerSampler(long sample_length_ms)
         init_apple_mon();
         power_channel_ = am_get_power_channels();
         sub_ = am_get_subscription(power_channel_);
+        last_sample_time_ = timespec_tomillis(timespec_real());
+        last_sample_mj_ = getEnergyConsumed();
     }
 
 ApplePowerSampler::~ApplePowerSampler() {
@@ -148,15 +150,21 @@ ApplePowerSampler::~ApplePowerSampler() {
     am_release(sub_);
 }
 
-// TODO we can store a temp var for the last reading and then return the difference
 double ApplePowerSampler::getInstantaneousPower() {
-    return 0;
+    long long time = timespec_tomillis(timespec_real());
+    double mj = getEnergyConsumed();
+
+    double power = (mj - last_sample_mj_) / (time - last_sample_time_);
+    last_sample_time_ = time;
+    last_sample_mj_ = mj;
+
+    // convert to power in milliwatts
+    return power * 1e3;
 }
 
 // TODO this needs to be a void*?
 double ApplePowerSampler::getEnergyConsumed() {
-    CFDictionaryRef sample = am_sample_power(sub_, power_channel_);
-    double mj = am_sample_to_millijoules(sample);
+    double mj = am_sample_to_millijoules(am_sample_power(sub_, power_channel_));
     return mj;
 }
 
