@@ -919,6 +919,11 @@ struct time_interval {
     uint64_t end;
 };
 
+struct test_config {
+    int n_prompt;
+    int n_gen;
+};
+
 struct test {
     static const std::string build_commit;
     static const int build_number;
@@ -1734,6 +1739,17 @@ __attribute__((__constructor__(101))) static void init(void) {
 int main(int argc, char ** argv) {
     ShowCrashReports();
 
+    std::vector<test_config> baseline_tests = {
+        {1024, 16},     // 64:1 title generation
+        {4096, 256},    // 16:1 content summarization
+        {2048, 256},    // 8:1  lots of code to fix
+        {2048, 768},    // 3:1  standard code chat
+        {1024, 1024},   // 1:1  code back and forth
+        {384, 1152},    // 1:3  code gen with back and forth
+        {64, 1024},     // 1:16 code gen/ideation
+        {16, 1536}      // 1:96 QA, Storytelling
+    };
+
     // try to set locale for unicode characters in markdown
     setlocale(LC_CTYPE, "C.UTF-8");  // [jart]
 
@@ -1809,7 +1825,7 @@ int main(int argc, char ** argv) {
 
 
     for (const auto & base_inst : params_instances) {
-        int num_gen = base_inst.n_prompt > 0 ? 8192 : 4096;
+        int num_gen = base_inst.n_prompt > 0 ? 4096: 2048;
         for (int context_size = 16; context_size <= num_gen; context_size *= 2) {
             // TODO this is a total hack.
             cmd_params_instance inst = base_inst;
@@ -1862,6 +1878,52 @@ int main(int argc, char ** argv) {
 
             llama_free(ctx);
         }
+    }
+
+    for (const auto & test_cfg : baseline_tests) {
+        cmd_params_instance inst = params_instances.front();
+        inst.n_prompt = test_cfg.n_prompt;
+        inst.n_gen = test_cfg.n_gen;
+
+        if (!lmodel || !prev_inst || !inst.equal_mparams(*prev_inst)) {
+            if (lmodel) {
+                llama_free_model(lmodel);
+            }
+
+            lmodel = llama_load_model_from_file(inst.model.c_str(), inst.to_llama_mparams());
+            if (lmodel == NULL) {
+                fprintf(stderr, "%s: error: failed to load model '%s'\n", __func__, inst.model.c_str());
+                return 1;
+            }
+            prev_inst = &inst;
+        }
+
+        llama_context_params cparams = inst.to_llama_cparams();
+        cparams.n_ctx = test_cfg.n_prompt + test_cfg.n_gen;
+
+        llama_context * ctx = llama_new_context_with_model(lmodel, cparams);
+        if (ctx == NULL) {
+            fprintf(stderr, "%s: error: failed to create context with model '%s'\n", __func__, inst.model.c_str());
+            llama_free_model(lmodel);
+            return 1;
+        }
+
+        test t(inst, lmodel, ctx, params.reps, sampler);
+
+        update_t_gen_column_args argv = {t, p.get()};
+        pthread_t update_thread;
+        int rc = pthread_create(&update_thread, NULL, update_t_gen_column, &argv);
+        if (rc) {
+            std::cerr << "Error creating pthread: " << rc << std::endl;
+            return EXIT_FAILURE;
+        }
+        t.run();
+
+        pthread_join(update_thread, NULL);
+
+        llama_print_timings(ctx);
+
+        llama_free(ctx);
     }
 
     llama_free_model(lmodel);
