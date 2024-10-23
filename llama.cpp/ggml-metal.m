@@ -3390,6 +3390,16 @@ void ggml_backend_metal_get_device_properties(ggml_backend_t backend, struct ggm
     // properties->max_total_threads_per_threadgroup = ctx->device.maxTotal
 }
 
+void ggml_backend_metal_get_device_memory_usage(ggml_backend_t backend, float * used, float * total) {
+    GGML_ASSERT(ggml_backend_is_metal(backend));
+
+    struct ggml_backend_metal_context * ctx = (struct ggml_backend_metal_context *)backend->context;
+
+    // TODO float instead?
+    *used = (float)ctx->device.currentAllocatedSize / 1024.0 / 1024.0;
+    *total = (float)ctx->device.recommendedMaxWorkingSetSize / 1024.0 / 1024.0;
+}
+
 bool ggml_backend_metal_supports_family(ggml_backend_t backend, int family) {
     GGML_ASSERT(ggml_backend_is_metal(backend));
 

@@ -6,7 +6,14 @@
 #include "nvml.h"
 #include "rsmi.h"
 #include "apple.h"
+#include "llama.cpp/ggml-backend-impl.h"
 
+typedef struct {
+    double  power; // TODO float.
+    float   vram;
+} power_sample_t;
+
+// TODO rename.. accelerator monitor or something?
 struct PowerSampler {
     // vars
     long sample_length_ms_;
@@ -15,7 +22,7 @@ struct PowerSampler {
     timespec sampling_end_time_;
     double energy_consumed_start_;
 
-    std::vector<double> samples_;
+    std::vector<power_sample_t> samples_;
 
     bool is_sampling_;
     pthread_t sampling_thread_;
@@ -26,10 +33,10 @@ struct PowerSampler {
     virtual ~PowerSampler();
 
     void start();
-    double stop();
+    power_sample_t stop();
 
     // this returns the instantaneous power in microwatts
-    virtual double getInstantaneousPower() = 0;
+    virtual power_sample_t sample() = 0;
     
     // this returns the energy consumed in millijoules
     virtual double getEnergyConsumed() = 0;
@@ -50,7 +57,7 @@ protected:
     // void startSampling() override;
     // void stopSampling() override;
     // PowerSample computeSample() override;
-    double getInstantaneousPower() override;
+    power_sample_t sample() override;
     double getEnergyConsumed() override;
 };
 
@@ -62,11 +69,12 @@ protected:
     // void startSampling() override;
     // void stopSampling() override;
     // PowerSample computeSample() override;
-    double getInstantaneousPower() override;
+    power_sample_t sample() override;
     double getEnergyConsumed() override;
 };
 
 struct ApplePowerSampler : public PowerSampler {
+    ggml_backend_t metal_backend_;
     CFMutableDictionaryRef power_channel_;
     IOReportSubscriptionRef sub_;
     long long last_sample_time_;
@@ -79,7 +87,7 @@ protected:
     // void startSampling() override;
     // void stopSampling() override;
     // PowerSample computeSample() override;
-    double getInstantaneousPower() override;
+    power_sample_t sample() override;
     double getEnergyConsumed() override;
 };
 

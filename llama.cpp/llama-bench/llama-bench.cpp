@@ -962,7 +962,7 @@ struct test {
     volatile int curr_run;
     volatile int t_gen; // this is the total number of tokens generated
     volatile int t_processed; // this is the total number of tokens processed
-    double avg_power;
+    power_sample_t monitor_result;
     std::string test_time;
     std::vector<time_interval> test_intervals;
     llama_context * ctx;
@@ -996,7 +996,7 @@ struct test {
         curr_run = 0;
         t_gen = 0;
         t_processed = 0;
-        avg_power = 0.0;
+        monitor_result = {0.0, 0.0f};
         pwr_sampler = sampler;
 
         // RFC 3339 date-time format
@@ -1039,7 +1039,7 @@ struct test {
 
             test_intervals.back().end = get_time_ns();
         }
-        avg_power = pwr_sampler->stop();
+        monitor_result = pwr_sampler->stop();
 
         test_completed = true;
     }
@@ -1375,6 +1375,9 @@ struct markdown_printer : public printer {
         if (field == "test") {
             return 13;
         }
+        if (field == "vram") {
+            return 15;
+        }
 
         int width = std::max((int)field.length(), 10);
 
@@ -1424,6 +1427,7 @@ struct markdown_printer : public printer {
         fields.emplace_back("run number");
         fields.emplace_back("avg time"); // [jart]
         fields.emplace_back("power");
+        // fields.emplace_back("vram");
         bool is_cpu_backend = test::get_backend() == "CPU" || test::get_backend() == "BLAS";
         if (!is_cpu_backend) {
             fields.emplace_back("n_gpu_layers");
@@ -1547,35 +1551,45 @@ struct markdown_printer : public printer {
                 int num_generated = t.t_gen + (t.curr_run * t.n_gen);
                 int num_processed = t.t_processed + (t.curr_run * t.n_prompt);
 
-                if (num_generated > 0) {
+                if (t.t_gen > 0) {
                     snprintf(buf, sizeof(buf), "%d / %d", num_generated,  t.n_gen * t.reps);
-                } else if (num_processed) {
+                } else {
                     snprintf(buf, sizeof(buf), "%d / %d", num_processed, t.n_prompt * t.reps);
                 }
 
                 value = buf;
             } else if (field == "t/s/watt") {
-                if (t.avg_power > 0) {
-                    snprintf(buf, sizeof(buf), "%.2f", t.avg_ts() / t.avg_power);
+                if (t.monitor_result.power > 0) {
+                    snprintf(buf, sizeof(buf), "%.2f", t.avg_ts() / t.monitor_result.power);
                 } else {
-                    // read instant power
-                    double power = t.pwr_sampler->getInstantaneousPower();
-                    snprintf(buf, sizeof(buf), "%.2f", t.avg_ts() / (power / 1e3));
+                    // TODO get the last sample?
+                    power_sample_t sample = t.pwr_sampler->sample();
+                    snprintf(buf, sizeof(buf), "%.2f", t.avg_ts() / (sample.power / 1e3));
                 }
 
                 // snprintf(buf, sizeof(buf), "%.2f", t.avg_ts() / t.avg_power);
                 value = buf;
             } else if (field == "power") {
-                if (t.avg_power > 0) {
-                    snprintf(buf, sizeof(buf), "%.2f W", t.avg_power);
+                if (t.monitor_result.power > 0) {
+                    snprintf(buf, sizeof(buf), "%.2f W", t.monitor_result.power);
                     value = buf;
                 } else {
                     // read instant power
-                    double power = t.pwr_sampler->getInstantaneousPower();
-                    snprintf(buf, sizeof(buf), "%.2f W", power / 1e3);
+                    power_sample_t sample = t.pwr_sampler->sample();
+                    snprintf(buf, sizeof(buf), "%.2f W", sample.power / 1e3);
                 }
 
                 value = buf;
+            } else if (field == "vram") {
+                if (t.monitor_result.vram > 0) {
+                    snprintf(buf, sizeof(buf), "%.2f MiB", t.monitor_result.vram);
+                    value = buf;
+                } else {
+                    // read instant vram
+                    power_sample_t sample = t.pwr_sampler->sample();
+                    snprintf(buf, sizeof(buf), "%.2f MiB", sample.vram);
+                    value = buf;
+                }
             } else if (field == "avg time") {
                 float avg_ms = t.avg_ns() / 1e6; 
 

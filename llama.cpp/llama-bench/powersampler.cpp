@@ -2,6 +2,7 @@
 #include <unistd.h>
 
 #include "llamafile/llamafile.h"
+#include "llama.cpp/ggml-metal.h"
 
 PowerSampler::PowerSampler(long sample_length_ms)
     : sample_length_ms_(sample_length_ms), is_sampling_(false) {
@@ -25,7 +26,9 @@ void PowerSampler::start() {
     }
 }
 
-double PowerSampler::stop() {
+// TODO return a sample, with max vram and avg power
+power_sample_t PowerSampler::stop() {
+    power_sample_t result = {0.0, 0.0f};
     if (is_sampling_) {
         is_sampling_ = false;
         sampling_end_time_ = timespec_real();
@@ -37,9 +40,19 @@ double PowerSampler::stop() {
 
         // average the samples
         double total_milliwatts = 0;
-        for (double milliwatts : samples_) {
-            total_milliwatts += milliwatts;
+        // TODO max vram could be wrong. we really need an initial sample before 
+        // anything starts to get an accurate reading
+        float max_vram = 0;
+
+        if (samples_.size() > 1) {
+            for (int i = 0; i < samples_.size(); i++) {
+                total_milliwatts += samples_[i].power;
+                if (samples_[i].vram > max_vram) {
+                    max_vram = samples_[i].vram;
+                }
+            }
         }
+
         double avg_milliwatts = total_milliwatts / samples_.size();
         double avg_watts = avg_milliwatts / 1e3;
         double avg_watts_energy = energy_consumed / sampling_time;
@@ -52,25 +65,26 @@ double PowerSampler::stop() {
 
         // TODO decide on default..?
         // pick the higher reading of the two
-        return (avg_watts > avg_watts_energy) ? avg_watts : avg_watts_energy;
+        result.power = (avg_watts > avg_watts_energy) ? avg_watts : avg_watts_energy;
+        result.vram = max_vram;
     }
 
-    return 0;
+    return result;
 }
 
 void* PowerSampler::sampling_thread_func(void* arg) {
     PowerSampler* sampler = static_cast<PowerSampler*>(arg);
+
     while (sampler->is_sampling_) {
         usleep(sampler->sample_length_ms_ * 1000); // Convert ms to microseconds
-
-        // on the first iteration wait 100ms to make sure the system gets something reasonable for us.
-        double power = sampler->getInstantaneousPower();
-        // fprintf(stderr, "Power: %.2fmW %.2fW\n", power, power / 1000);
+        power_sample_t sample = sampler->sample();
 
         pthread_mutex_lock(&sampler->samples_mutex_);
-        sampler->samples_.push_back(power);
+        sampler->samples_.push_back(sample);
         pthread_mutex_unlock(&sampler->samples_mutex_);
+
     }
+
     return nullptr;
 }
 
@@ -89,12 +103,18 @@ NvidiaPowerSampler::~NvidiaPowerSampler() {
     nvml_shutdown();
 }
 
-double NvidiaPowerSampler::getInstantaneousPower() {
+power_sample_t NvidiaPowerSampler::sample() {
+    power_sample_t sample;
     unsigned int mw;
+
+    if (nvml_get_memory_usage(device_, &sample.vram)) { }
     if (!nvml_get_power_usage(device_, &mw)) {
-        return 0.0;
+        // TODO return a bool instead? error?
     }
-    return (double)mw;
+
+    sample.power = (double)mw;
+
+    return sample;
 }
 
 double NvidiaPowerSampler::getEnergyConsumed() {
@@ -116,22 +136,27 @@ AMDPowerSampler::~AMDPowerSampler() {
     rsmi_shutdown();
 }
 
-double AMDPowerSampler::getInstantaneousPower() {
-    double uw;
-    if (!rsmi_get_power(&uw)) {
-        return 0.0;
-    }
-    // Convert microwatts to milliwatts
-    return uw / 1000.0;
+power_sample_t AMDPowerSampler::sample() {
+    power_sample_t sample;
+
+    double power;
+    float vram;
+
+    // if (!rsmi_get_power(&power)) { }
+    if (!rsmi_get_memory_usage(&vram)) { }
+
+    sample.power = power;
+    sample.vram = vram;
+
+    return sample;
 }
 
 double AMDPowerSampler::getEnergyConsumed() {
     double uj;
-    if (!rsmi_get_energy_count(&uj)) {
-        return 0.0;
-    }
-    // Convert microjoules to millijoules
-    return uj / 1000.0;
+    // if (!rsmi_get_energy_count(&uj)) {
+    //     return 0.0;
+    // }
+    return uj;
 }
 
 // ApplePowerSampler implementation
@@ -143,6 +168,7 @@ ApplePowerSampler::ApplePowerSampler(long sample_length_ms)
         sub_ = am_get_subscription(power_channel_);
         last_sample_time_ = timespec_tomillis(timespec_real());
         last_sample_mj_ = getEnergyConsumed();
+        metal_backend_ = ggml_backend_metal_init();
     }
 
 ApplePowerSampler::~ApplePowerSampler() {
@@ -150,7 +176,11 @@ ApplePowerSampler::~ApplePowerSampler() {
     am_release(sub_);
 }
 
-double ApplePowerSampler::getInstantaneousPower() {
+power_sample_t ApplePowerSampler::sample() {
+    float used;
+    float total;
+    ggml_backend_metal_get_device_memory_usage(metal_backend_, &used, &total);
+
     long long time = timespec_tomillis(timespec_real());
     double mj = getEnergyConsumed();
 
@@ -159,7 +189,9 @@ double ApplePowerSampler::getInstantaneousPower() {
     last_sample_mj_ = mj;
 
     // convert to power in milliwatts
-    return power * 1e3;
+    power_sample_t sample = {power * 1e3, used};
+
+    return sample;
 }
 
 // TODO this needs to be a void*?

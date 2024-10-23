@@ -41,6 +41,7 @@ static struct Rsmi {
     int (*rsmi_dev_current_socket_power_get)(uint32_t dv_ind, uint64_t *power); // in uW
     int (*rsmi_dev_power_ave_get)(uint32_t dv_ind, uint32_t sensor_ind, uint64_t *power);
     int (*rsmi_dev_energy_count_get)(uint32_t dv_ind, uint64_t *power, float *counter_resolution, uint64_t *timestamp);
+    int (*rsmi_dev_memory_usage_get)(uint32_t dv_ind, int mem_type, uint64_t *used);
     int (*rsmi_shut_down)(void);
 } rsmi;
 
@@ -55,6 +56,7 @@ bool rsmi_init() {
     IMPORT_RSMI_FUNCTION(rsmi_dev_current_socket_power_get, int (*)(uint32_t, uint64_t*));
     IMPORT_RSMI_FUNCTION(rsmi_dev_power_ave_get, int (*)(uint32_t, uint32_t, uint64_t*));
     IMPORT_RSMI_FUNCTION(rsmi_dev_energy_count_get, int (*)(uint32_t, uint64_t*, float*, uint64_t*));
+    IMPORT_RSMI_FUNCTION(rsmi_dev_memory_usage_get, int (*)(uint32_t, int, uint64_t*));
     IMPORT_RSMI_FUNCTION(rsmi_shut_down, int (*)(void));
 
     if (!ok) {
@@ -79,7 +81,8 @@ bool rsmi_get_power(double *power) {
     RSMI_POWER_TYPE type;
 
     RSMI_FUNCTION_CALL(rsmi_dev_power_get, "failed to get power", 0, &power_val, &type);
-    *power = (double)power_val;
+    // Convert microwatts to milliwatts
+    *power = (double)power_val / 1000.0;
     return true;
 }
 
@@ -88,7 +91,8 @@ bool rsmi_get_energy_count(double *energy) {
     float counter_resolution;
     uint64_t timestamp;
     RSMI_FUNCTION_CALL(rsmi_dev_energy_count_get, "failed to get energy count", 0, &power, &counter_resolution, &timestamp);
-    *energy = (double)(power * counter_resolution);
+    // Convert microjoules to millijoules
+    *energy = (double)(power * counter_resolution) / 1000.0;
     return true;
 }
 
@@ -96,6 +100,14 @@ bool rsmi_get_power_instant(double *power) {
     uint64_t power_val;
     RSMI_FUNCTION_CALL(rsmi_dev_current_socket_power_get, "failed to get instant power", 0, &power_val);
     *power = (double)power_val;
+    return true;
+}
+
+bool rsmi_get_memory_usage(float *memory) {
+    uint64_t used;
+    // this is device 0 and memory type 0 (RSMI_MEM_TYPE_VRAM)
+    RSMI_FUNCTION_CALL(rsmi_dev_memory_usage_get, "failed to get memory usage", 0, 0, &used);
+    *memory = (float)used / 1024.0 / 1024.0;
     return true;
 }
 

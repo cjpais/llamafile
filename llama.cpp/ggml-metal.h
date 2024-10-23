@@ -67,6 +67,8 @@ GGML_API GGML_CALL ggml_backend_buffer_type_t ggml_backend_metal_buffer_type(voi
 
 GGML_API void ggml_backend_metal_get_device_properties(ggml_backend_t backend, struct ggml_metal_device_properties * properties);
 
+GGML_API void ggml_backend_metal_get_device_memory_usage(ggml_backend_t backend, float * used, float * total);
+
 // helper to check if the device supports a specific family
 // ideally, the user code should be doing these checks
 // ref: https://developer.apple.com/metal/Metal-Feature-Set-Tables.pdf

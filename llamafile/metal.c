@@ -75,6 +75,7 @@ static struct Metal {
     typeof(ggml_backend_metal_log_set_callback) *log_set_callback;
     typeof(ggml_backend_reg_metal_init) *reg_init;
     typeof(ggml_backend_metal_get_device_properties) *get_device_properties;
+    typeof(ggml_backend_metal_get_device_memory_usage) *get_device_memory_usage;
     typeof(ggml_backend_metal_supports_family) *supports_family;
 } ggml_metal;
 
@@ -220,6 +221,7 @@ static bool LinkMetal(const char *dso) {
     ok &= !!(ggml_metal.log_set_callback = cosmo_dlsym(lib, "ggml_backend_metal_log_set_callback"));
     ok &= !!(ggml_metal.reg_init = cosmo_dlsym(lib, "ggml_backend_reg_metal_init"));
     ok &= !!(ggml_metal.get_device_properties = cosmo_dlsym(lib, "ggml_backend_metal_get_device_properties"));
+    ok &= !!(ggml_metal.get_device_memory_usage = cosmo_dlsym(lib, "ggml_backend_metal_get_device_memory_usage"));
     ok &= !!(ggml_metal.supports_family = cosmo_dlsym(lib, "ggml_backend_metal_supports_family"));
     if (!ok) {
         tinylog(Dlerror(), ": not all symbols could be imported\n", NULL);
@@ -330,6 +332,12 @@ void ggml_backend_metal_get_device_properties(ggml_backend_t backend,
     if (!llamafile_has_metal())
         return;
     return ggml_metal.get_device_properties(backend, properties);
+}
+
+void ggml_backend_metal_get_device_memory_usage(ggml_backend_t backend, float *used, float *total) {
+    if (!llamafile_has_metal())
+        return;
+    return ggml_metal.get_device_memory_usage(backend, used, total);
 }
 
 bool ggml_backend_metal_supports_family(ggml_backend_t backend, int family) {
