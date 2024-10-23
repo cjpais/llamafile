@@ -35,6 +35,9 @@ struct PowerSampler {
     void start();
     power_sample_t stop();
 
+    power_sample_t getLatestSample();
+
+    // TODO protect this as its called from the sampling thread
     // this returns the instantaneous power in microwatts
     virtual power_sample_t sample() = 0;
     

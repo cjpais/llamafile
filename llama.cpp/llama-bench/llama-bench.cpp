@@ -1563,7 +1563,7 @@ struct markdown_printer : public printer {
                     snprintf(buf, sizeof(buf), "%.2f", t.avg_ts() / t.monitor_result.power);
                 } else {
                     // TODO get the last sample?
-                    power_sample_t sample = t.pwr_sampler->sample();
+                    power_sample_t sample = t.pwr_sampler->getLatestSample();
                     snprintf(buf, sizeof(buf), "%.2f", t.avg_ts() / (sample.power / 1e3));
                 }
 
@@ -1575,7 +1575,7 @@ struct markdown_printer : public printer {
                     value = buf;
                 } else {
                     // read instant power
-                    power_sample_t sample = t.pwr_sampler->sample();
+                    power_sample_t sample = t.pwr_sampler->getLatestSample();
                     snprintf(buf, sizeof(buf), "%.2f W", sample.power / 1e3);
                 }
 
@@ -1586,7 +1586,7 @@ struct markdown_printer : public printer {
                     value = buf;
                 } else {
                     // read instant vram
-                    power_sample_t sample = t.pwr_sampler->sample();
+                    power_sample_t sample = t.pwr_sampler->getLatestSample();
                     snprintf(buf, sizeof(buf), "%.2f MiB", sample.vram);
                     value = buf;
                 }

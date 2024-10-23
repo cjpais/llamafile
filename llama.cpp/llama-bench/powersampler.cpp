@@ -72,6 +72,20 @@ power_sample_t PowerSampler::stop() {
     return result;
 }
 
+power_sample_t PowerSampler::getLatestSample() {
+    pthread_mutex_lock(&samples_mutex_);
+
+    if (samples_.empty()) {
+        pthread_mutex_unlock(&samples_mutex_);
+        return {0.0, 0.0f};
+    }
+
+    power_sample_t sample = samples_.back();
+    pthread_mutex_unlock(&samples_mutex_);
+
+    return sample;
+}
+
 void* PowerSampler::sampling_thread_func(void* arg) {
     PowerSampler* sampler = static_cast<PowerSampler*>(arg);
 
@@ -185,6 +199,7 @@ power_sample_t ApplePowerSampler::sample() {
     double mj = getEnergyConsumed();
 
     double power = (mj - last_sample_mj_) / (time - last_sample_time_);
+    // TODO we have to be careful with this as it is not protected by a mutex
     last_sample_time_ = time;
     last_sample_mj_ = mj;
 
