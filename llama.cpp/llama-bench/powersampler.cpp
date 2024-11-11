@@ -72,6 +72,7 @@ power_sample_t PowerSampler::stop() {
     return result;
 }
 
+// this will return the latest sample in mw
 power_sample_t PowerSampler::getLatestSample() {
     pthread_mutex_lock(&samples_mutex_);
 

@@ -263,7 +263,7 @@ static void get_sys_info(SystemInfo* info) {
     // TODO on darwin we might want to get from systemprofiler SPSoftwareDataType os_version
     strncpy(info->version, names.version, MAX_STRING_LENGTH - 1);
     strncpy(info->system_architecture, names.machine, MAX_STRING_LENGTH - 1);
-    
+
     std::string cpu_info = get_cpu_info();
     strncpy(info->cpu, cpu_info.c_str(), MAX_STRING_LENGTH - 1);
 
@@ -323,7 +323,7 @@ static void get_gpu_info(GPUInfo* info) {
         std::string command = "system_profiler SPDisplaysDataType | grep \"Total Number of Cores:\" | awk '{print $5}'";
         std::string num_cores = exec(command.c_str());
         props.core_count = std::stoi(num_cores);
-        
+
         // Remove any trailing newline
         if (!num_cores.empty() && num_cores[num_cores.length()-1] == '\n') {
             num_cores.erase(num_cores.length()-1);
@@ -924,6 +924,12 @@ struct test_config {
     int n_gen;
 };
 
+enum token_metric {
+    TOTAL_TPS,
+    PROMPT_TPS,
+    GEN_TPS
+};
+
 struct test {
     static const std::string build_commit;
     static const int build_number;
@@ -965,6 +971,9 @@ struct test {
     power_sample_t monitor_result;
     std::string test_time;
     std::vector<time_interval> test_intervals;
+    std::vector<time_interval> prompt_intervals;
+    std::vector<time_interval> gen_intervals;
+    std::vector<int> time_to_first_token;
     llama_context * ctx;
     PowerSampler * pwr_sampler;
 
@@ -1008,7 +1017,7 @@ struct test {
     }
 
     void run() {
-        llama_kv_cache_clear(ctx); 
+        llama_kv_cache_clear(ctx);
 
         // warmup run
         // if (n_prompt > 0) {
@@ -1054,6 +1063,11 @@ struct test {
 
         int n_processed = 0;
 
+        time_interval interval;
+        interval.start = get_time_ns();
+        interval.end = 0;
+        prompt_intervals.push_back(interval);
+
         while (n_processed < n_prompt) {
             int n_tokens = std::min(n_prompt - n_processed, n_batch);
             tokens[0] = n_processed == 0 && llama_add_bos_token(model) ? llama_token_bos(model) : std::rand() % n_vocab;
@@ -1066,6 +1080,8 @@ struct test {
         }
 
         llama_synchronize(ctx);
+
+        prompt_intervals.back().end = get_time_ns();
     }
 
     void test_gen() {
@@ -1076,17 +1092,33 @@ struct test {
 
         llama_token token = llama_add_bos_token(model) ? llama_token_bos(model) : std::rand() % n_vocab;
 
+        time_interval interval;
+        interval.start = get_time_ns();
+        interval.end = 0;
+        gen_intervals.push_back(interval);
+
         for (int i = 0; i < n_gen; i++) {
             llama_decode(ctx, llama_batch_get_one(&token, 1, n_prompt + i, 0));
             llama_synchronize(ctx);
+            if (i == 0) {
+                int ttft = get_time_ns() - test_intervals.back().start;
+                time_to_first_token.push_back(ttft);
+            }
             token = std::rand() % n_vocab;
             t_gen = i + 1;
         }
+
+        gen_intervals.back().end = get_time_ns();
     }
 
-    std::vector<uint64_t> get_samples_ns() const {
+    std::vector<uint64_t> get_samples_ns(token_metric metric = TOTAL_TPS) const {
+        const std::vector<time_interval>& intervals = 
+            metric == PROMPT_TPS ? prompt_intervals :
+            metric == GEN_TPS ? gen_intervals : 
+            test_intervals;
+
         std::vector<uint64_t> samples_ns;
-        for (const auto & interval : test_intervals) {
+        for (const auto & interval : intervals) {
             if (interval.end == 0) {
                 continue;
             }
@@ -1095,30 +1127,52 @@ struct test {
         return samples_ns;
     }
 
-    uint64_t avg_ns() const {
-        std::vector<uint64_t> samples_ns = get_samples_ns();
+    uint64_t avg_ns(token_metric metric = TOTAL_TPS) const {
+        std::vector<uint64_t> samples_ns = get_samples_ns(metric);
         return ::avg(samples_ns);
     }
 
-    uint64_t stdev_ns() const {
-        std::vector<uint64_t> samples_ns = get_samples_ns();
+    uint64_t stdev_ns(token_metric metric = TOTAL_TPS) const {
+        std::vector<uint64_t> samples_ns = get_samples_ns(metric);
         return ::stdev(samples_ns);
     }
 
-    std::vector<double> get_ts() const {
-        int n_tokens = n_prompt + n_gen;
+    float get_power() const {
+        if (monitor_result.power > 0) {
+            return monitor_result.power;
+        } else {
+            // the sample is in mw, convert to w
+            return pwr_sampler->getLatestSample().power / 1000.0f;
+        }
+    }
+
+    std::vector<double> get_ts(token_metric metric = TOTAL_TPS) const {
+        int n_tokens = 0;
+        switch (metric) {
+            case TOTAL_TPS:
+                n_tokens = n_prompt + n_gen;
+                break;
+            case PROMPT_TPS:
+                n_tokens = n_prompt;
+                break;
+            case GEN_TPS:
+                n_tokens = n_gen;
+                break;
+        }
+
         std::vector<double> ts;
-        std::vector<uint64_t> samples_ns = get_samples_ns();
-        std::transform(samples_ns.begin(), samples_ns.end(), std::back_inserter(ts), [n_tokens](uint64_t t) { return 1e9 * n_tokens / t; });
+        std::vector<uint64_t> samples_ns = get_samples_ns(metric);
+        std::transform(samples_ns.begin(), samples_ns.end(), std::back_inserter(ts),
+            [n_tokens](uint64_t t) { return 1e9 * n_tokens / t; });
         return ts;
     }
 
-    double avg_ts() const {
-        return ::avg(get_ts());
+    double avg_ts(token_metric metric = TOTAL_TPS) const {
+        return ::avg(get_ts(metric));
     }
 
-    double stdev_ts() const {
-        return ::stdev(get_ts());
+    double stdev_ts(token_metric metric = TOTAL_TPS) const {
+        return ::stdev(get_ts(metric));
     }
 
     static std::string get_backend() {
@@ -1417,17 +1471,19 @@ struct markdown_printer : public printer {
 
     void print_header(const cmd_params & params) override {
         // select fields to print
-        fields.emplace_back("cpu_info"); // [jart]
+        // fields.emplace_back("cpu_info"); // [jart]
         // fields.emplace_back("gpu_info"); // [jart]
-        fields.emplace_back("model_filename");
+        // fields.emplace_back("model_filename");
+        // fields.emplace_back("model_type");
         // fields.emplace_back("model");
-        // fields.emplace_back("size"); // [jart]
-        // fields.emplace_back("params"); // [jart]
-        // fields.emplace_back("backend"); // [jart]
+        fields.emplace_back("test");
         fields.emplace_back("run number");
+        // fields.emplace_back("size"); // [jart]
+        fields.emplace_back("params"); // [jart]
+        // fields.emplace_back("backend"); // [jart]
         fields.emplace_back("avg time"); // [jart]
         fields.emplace_back("power");
-        // fields.emplace_back("vram");
+        fields.emplace_back("vram");
         bool is_cpu_backend = test::get_backend() == "CPU" || test::get_backend() == "BLAS";
         if (!is_cpu_backend) {
             fields.emplace_back("n_gpu_layers");
@@ -1469,9 +1525,11 @@ struct markdown_printer : public printer {
             fields.emplace_back("embeddings");
         }
         fields.emplace_back("tokens processed");
-        fields.emplace_back("test");
-        fields.emplace_back("t/s");
-        fields.emplace_back("t/s/watt");
+        fields.emplace_back("pp t/s");
+        fields.emplace_back("tg t/s");
+        fields.emplace_back("pp t/s/watt");
+        fields.emplace_back("tg t/s/watt");
+        fields.emplace_back("ttft");
 
         fprintf(fout, "|");
         for (const auto & field : fields) {
@@ -1489,6 +1547,8 @@ struct markdown_printer : public printer {
     void print_test(const test & t) override {
         std::map<std::string, std::string> vmap = t.get_map();
 
+        float power = t.get_power();
+
         fprintf(fout, "|");
         for (const auto & field : fields) {
             std::string value;
@@ -1503,11 +1563,12 @@ struct markdown_printer : public printer {
                 }
                 value = buf;
             } else if (field == "params") {
-                if (t.model_n_params < 1000*1000*1000) {
-                    snprintf(buf, sizeof(buf), "%.2f M", t.model_n_params / 1e6);
-                } else {
-                    snprintf(buf, sizeof(buf), "%.2f B", t.model_n_params / 1e9);
-                }
+                snprintf(buf, sizeof(buf), "%d", t.model_n_params);
+                // if (t.model_n_params < 1000*1000*1000) {
+                //     snprintf(buf, sizeof(buf), "%.2f M", t.model_n_params / 1e6);
+                // } else {
+                //     snprintf(buf, sizeof(buf), "%.2f B", t.model_n_params / 1e9);
+                // }
                 value = buf;
             } else if (field == "backend") {
                 value = test::get_backend();
@@ -1523,51 +1584,37 @@ struct markdown_printer : public printer {
                     snprintf(buf, sizeof(buf), "pp%d+tg%d", t.n_prompt, t.n_gen);
                 }
                 value = buf;
-            } else if (field == "t/s") {
-                if (t.test_intervals.size() == t.reps && t.test_intervals.back().end > t.test_intervals.front().start) {
-                    snprintf(buf, sizeof(buf), "%.2f", t.avg_ts());
-                } else {
-                    int num_generated = t.t_gen + (t.curr_run * t.n_gen);
-                    int num_processed = t.t_processed + (t.curr_run * t.n_prompt);
+            } else if (field == "pp t/s") {
+                snprintf(buf, sizeof(buf), "%.2f", t.avg_ts(PROMPT_TPS));
 
-                    uint64_t time_elapsed = 0;
-                    for (const auto & interval : t.test_intervals) {
-                        if (interval.end == 0) {
-                            time_elapsed += get_time_ns() - interval.start;
-                        } else {
-                            time_elapsed += interval.end - interval.start;
-                        }
-                    }
-
-                    if (num_generated > 0) {
-                        snprintf(buf, sizeof(buf), "%.2f", 1e9 * num_generated / time_elapsed);
-                    } else if (num_processed > 0) {
-                        snprintf(buf, sizeof(buf), "%.2f", 1e9 * num_processed / time_elapsed);
-                    }
-                }
+                value = buf;
+            } else if (field == "tg t/s") {
+                snprintf(buf, sizeof(buf), "%.2f", t.avg_ts(GEN_TPS));
 
                 value = buf;
             } else if (field == "tokens processed") {
                 int num_generated = t.t_gen + (t.curr_run * t.n_gen);
                 int num_processed = t.t_processed + (t.curr_run * t.n_prompt);
 
-                if (t.t_gen > 0) {
-                    snprintf(buf, sizeof(buf), "%d / %d", num_generated,  t.n_gen * t.reps);
-                } else {
-                    snprintf(buf, sizeof(buf), "%d / %d", num_processed, t.n_prompt * t.reps);
-                }
+                snprintf(buf, sizeof(buf), "%d / %d", num_generated + num_processed,  (t.n_gen * t.reps) + (t.n_prompt * t.reps));
 
                 value = buf;
-            } else if (field == "t/s/watt") {
-                if (t.monitor_result.power > 0) {
-                    snprintf(buf, sizeof(buf), "%.2f", t.avg_ts() / t.monitor_result.power);
+            } else if (field == "pp t/s/watt") {
+                snprintf(buf, sizeof(buf), "%.4f", t.avg_ts(PROMPT_TPS) / power);
+
+                value = buf;
+            } else if (field == "tg t/s/watt") {
+                snprintf(buf, sizeof(buf), "%.4f", t.avg_ts(GEN_TPS) / power);
+
+                value = buf;
+            } else if (field == "ttft") {
+                if (!t.time_to_first_token.empty()) {
+                    double avg_ttft = std::accumulate(t.time_to_first_token.begin(), t.time_to_first_token.end(), 0.0) / t.time_to_first_token.size();
+                    snprintf(buf, sizeof(buf), "%.2f ms", avg_ttft / 1e6);
                 } else {
-                    // TODO get the last sample?
-                    power_sample_t sample = t.pwr_sampler->getLatestSample();
-                    snprintf(buf, sizeof(buf), "%.2f", t.avg_ts() / (sample.power / 1e3));
+                    snprintf(buf, sizeof(buf), "N/A");
                 }
 
-                // snprintf(buf, sizeof(buf), "%.2f", t.avg_ts() / t.avg_power);
                 value = buf;
             } else if (field == "power") {
                 if (t.monitor_result.power > 0) {
@@ -1591,7 +1638,7 @@ struct markdown_printer : public printer {
                     value = buf;
                 }
             } else if (field == "avg time") {
-                float avg_ms = t.avg_ns() / 1e6; 
+                float avg_ms = t.avg_ns() / 1e6;
 
                 if (avg_ms < 1000) {
                     snprintf(buf, sizeof(buf), "%.2f ms", avg_ms);
@@ -1660,45 +1707,6 @@ struct sql_printer : public printer {
     }
 };
 
-static void test_prompt(llama_context * ctx, int n_prompt, int n_past, int n_batch, int n_threads) {
-    llama_set_n_threads(ctx, n_threads, n_threads);
-
-    const llama_model * model = llama_get_model(ctx);
-    const int32_t n_vocab = llama_n_vocab(model);
-
-    std::vector<llama_token> tokens(n_batch);
-
-    int n_processed = 0;
-
-    while (n_processed < n_prompt) {
-        int n_tokens = std::min(n_prompt - n_processed, n_batch);
-        tokens[0] = n_processed == 0 && llama_add_bos_token(model) ? llama_token_bos(model) : std::rand() % n_vocab;
-        for (int i = 1; i < n_tokens; i++) {
-            tokens[i] = std::rand() % n_vocab;
-        }
-        llama_decode(ctx, llama_batch_get_one(tokens.data(), n_tokens, n_past + n_processed, 0));
-        n_processed += n_tokens;
-    }
-
-    llama_synchronize(ctx);
-}
-
-static void test_gen(llama_context * ctx, int n_gen, int n_past, test * t) {
-    llama_set_n_threads(ctx, t->n_threads, t->n_threads);
-
-    const llama_model * model = llama_get_model(ctx);
-    const int32_t n_vocab = llama_n_vocab(model);
-
-    llama_token token = llama_add_bos_token(model) ? llama_token_bos(model) : std::rand() % n_vocab;
-
-    for (int i = 0; i < n_gen; i++) {
-        llama_decode(ctx, llama_batch_get_one(&token, 1, n_past + i, 0));
-        llama_synchronize(ctx);
-        token = std::rand() % n_vocab;
-        t->t_gen = i + 1;
-    }
-}
-
 static void llama_null_log_callback(enum ggml_log_level level, const char * text, void * user_data) {
     (void) level;
     (void) text;
@@ -1715,16 +1723,26 @@ void* print_num_generated_periodically(void* args) {
     return NULL; // This line is technically unreachable in this example
 }
 
-// TODO handle the full lifecycle?
 void* update_t_gen_column(void* args) {
     update_t_gen_column_args* argv = static_cast<update_t_gen_column_args*>(args);
     const test & t = argv->t;
     printer* p = argv->p;
 
+    // Check if printer is markdown printer
+    markdown_printer* md_printer = dynamic_cast<markdown_printer*>(p);
+    if (!md_printer) {
+        // For non-markdown printers, wait until test is completed
+        while (!t.test_completed) {
+            usleep(100000);
+        }
+        p->print_test(t);
+        return nullptr;
+    }
+
+    // For markdown printer, update continuously
     p->print_test(t);
     int last_t_gen = 0;
     while (!t.test_completed) {
-        // printf("num generated between now and last print: %d\n\n", t.t_gen - last_t_gen);
         last_t_gen = t.t_gen;
         // Move up to the previous line and clear it
         printf("\033[A"); // Move up
@@ -1743,8 +1761,6 @@ void* update_t_gen_column(void* args) {
     p->print_test(t);
     return nullptr;
 }
-
-
 
 __attribute__((__constructor__(101))) static void init(void) {
     FLAG_gpu = LLAMAFILE_GPU_DISABLE; // [jart]
@@ -1767,27 +1783,11 @@ int main(int argc, char ** argv) {
     // try to set locale for unicode characters in markdown
     setlocale(LC_CTYPE, "C.UTF-8");  // [jart]
 
-    // __warn_if_powersave();  // [jart]
-    // if (!getenv("LLAMAFILE_TEMPERATURE_FILE") || !getenv("LLAMAFILE_TEMPERATURE_MAX"))
-    //     fprintf(stderr, "warning: don't know how to govern your cpu temperature; "
-    //             "consider setting the environment variables described in llamafile/govern.cpp\n");
-
-// #if !defined(NDEBUG)
-//     fprintf(stderr, "warning: asserts enabled, performance may be affected\n");
-// #endif
-
-#if (defined(_MSC_VER) && defined(_DEBUG)) || (!defined(_MSC_VER) && !defined(__OPTIMIZE__))
-    fprintf(stderr, "warning: debug build, performance may be affected\n");
-#endif
-
-#if defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_THREAD__)
-    fprintf(stderr, "warning: sanitizer enabled, performance may be affected\n");
-#endif
-
-    printf("Made it to the main function\n");
     cmd_params params = parse_cmd_params(argc, argv);
-    printf("Made it to the main function\n");
     FLAGS_READY = true;
+
+    GPUInfo gpu_info;
+    get_gpu_info(&gpu_info);
 
     RuntimeInfo runtime_info;
     get_runtime_info(&runtime_info);
@@ -1795,8 +1795,6 @@ int main(int argc, char ** argv) {
     SystemInfo sys_info;
     get_sys_info(&sys_info);
 
-    GPUInfo gpu_info;
-    get_gpu_info(&gpu_info);
 
     // initialize llama.cpp
     if (!params.verbose) {
@@ -1837,7 +1835,6 @@ int main(int argc, char ** argv) {
 
     pthread_t print_thread;
 
-
     for (const auto & base_inst : params_instances) {
         int num_gen = base_inst.n_prompt > 0 ? 4096: 2048;
         for (int context_size = 16; context_size <= num_gen; context_size *= 2) {
@@ -1846,7 +1843,7 @@ int main(int argc, char ** argv) {
             if (base_inst.n_prompt > 0) {
                 inst.n_prompt = context_size;
             } else {
-                inst.n_gen = context_size; 
+                inst.n_gen = context_size;
             }
 
             // keep the same model between tests when possible
@@ -1860,9 +1857,12 @@ int main(int argc, char ** argv) {
                     fprintf(stderr, "%s: error: failed to load model '%s'\n", __func__, inst.model.c_str());
                     return 1;
                 }
+
+                // TODO build a json payload still..
+                // printf("Model N Params: %d\n", llama_model_n_params(lmodel));
+
                 prev_inst = &inst;
             }
-
 
             llama_context_params cparams = inst.to_llama_cparams();
             cparams.n_ctx = context_size;
@@ -1873,7 +1873,6 @@ int main(int argc, char ** argv) {
                 llama_free_model(lmodel);
                 return 1;
             }
-
 
             test t(inst, lmodel, ctx, params.reps, sampler);
 
