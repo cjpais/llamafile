@@ -216,7 +216,20 @@ double ApplePowerSampler::getEnergyConsumed() {
     return mj;
 }
 
-// Function to get appropriate PowerSampler based on the system
+// DummyPowerSampler implementation
+
+DummyPowerSampler::DummyPowerSampler(long sample_length_ms)
+    : PowerSampler(sample_length_ms) {}
+
+power_sample_t DummyPowerSampler::sample() {
+    return {0.0, 0.0f};
+}
+
+double DummyPowerSampler::getEnergyConsumed() {
+    return 0.0;
+}
+
+// Update getPowerSampler function to return DummyPowerSampler if no other sampler is found
 PowerSampler* getPowerSampler(long sample_length_ms) {
     if (llamafile_has_gpu() && FLAG_gpu != LLAMAFILE_GPU_DISABLE) {
         if (llamafile_has_metal()) {
@@ -228,5 +241,5 @@ PowerSampler* getPowerSampler(long sample_length_ms) {
         }
     }
 
-    return NULL;
+    return new DummyPowerSampler(sample_length_ms);
 }

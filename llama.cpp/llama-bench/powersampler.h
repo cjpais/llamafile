@@ -94,4 +94,13 @@ protected:
     double getEnergyConsumed() override;
 };
 
+struct DummyPowerSampler : public PowerSampler {
+    DummyPowerSampler(long sample_length_ms);
+    ~DummyPowerSampler() override {}
+
+protected:
+    power_sample_t sample() override;
+    double getEnergyConsumed() override;
+};
+
 PowerSampler* getPowerSampler(long sample_length_ms);

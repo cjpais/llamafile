@@ -40,6 +40,7 @@ static struct Nvml {
 } nvml;
 
 bool nvml_init() {
+    // TODO go find the .so or .dll
     void *lib = cosmo_dlopen("/usr/lib/x86_64-linux-gnu/libnvidia-ml.so", RTLD_LAZY);
     bool ok = true;
 

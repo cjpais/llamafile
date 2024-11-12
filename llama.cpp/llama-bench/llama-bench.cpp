@@ -228,6 +228,7 @@ typedef struct {
 
 typedef struct {
     char name[MAX_STRING_LENGTH];
+    char manufacturer[MAX_STRING_LENGTH];
     double total_memory_gb;
     int core_count;
     double capability;
@@ -239,10 +240,10 @@ static void get_runtime_info(RuntimeInfo* info) {
     strncpy(info->llamafile_version, LLAMAFILE_VERSION_STRING, MAX_STRING_LENGTH - 1);
     strncpy(info->llama_commit, LLAMA_COMMIT, MAX_STRING_LENGTH - 1);
 
-    printf("\033[0;35m\n===== llamafile bench runtime information =====\n\n");
-    printf("%-20s \033[1m%s\033[22m\n", "llamafile version:", info->llamafile_version);
-    printf("%-20s %s\n", "llama.cpp commit:", info->llama_commit);
-    printf("\n===============================================\n\n\033[0m");
+    // printf("\033[0;35m\n===== llamafile bench runtime information =====\n\n");
+    // printf("%-20s \033[1m%s\033[22m\n", "llamafile version:", info->llamafile_version);
+    // printf("%-20s %s\n", "llama.cpp commit:", info->llama_commit);
+    // printf("\n===============================================\n\n\033[0m");
 }
 
 static void get_sys_info(SystemInfo* info) {
@@ -269,14 +270,14 @@ static void get_sys_info(SystemInfo* info) {
 
     info->ram_gb = si.totalram * si.mem_unit / 1073741824.0;
 
-    printf("===== system information =====\n\n");
-    printf("%-20s %s\n", "Kernel Type:", info->kernel_type);
-    printf("%-20s %s\n", "Kernel Release:", info->kernel_release);
-    printf("%-20s %s\n", "Version:", info->version);
-    printf("%-20s %s\n", "System Architecture:", info->system_architecture);
-    printf("%-20s %s\n", "CPU:", info->cpu);
-    printf("%-20s %.2f GiB\n", "RAM:", info->ram_gb);
-    printf("\n===============================\n\n");
+    // printf("===== system information =====\n\n");
+    // printf("%-20s %s\n", "Kernel Type:", info->kernel_type);
+    // printf("%-20s %s\n", "Kernel Release:", info->kernel_release);
+    // printf("%-20s %s\n", "Version:", info->version);
+    // printf("%-20s %s\n", "System Architecture:", info->system_architecture);
+    // printf("%-20s %s\n", "CPU:", info->cpu);
+    // printf("%-20s %.2f GiB\n", "RAM:", info->ram_gb);
+    // printf("\n===============================\n\n");
 }
 
 std::string exec(const char* cmd) {
@@ -295,6 +296,8 @@ std::string exec(const char* cmd) {
 static void get_gpu_info(GPUInfo* info) {
     if (info == NULL) return;
 
+    // TODO: Check if GPU is enabled. otherwise get cpu info.
+
     if (llamafile_has_cuda()) {
         int count = ggml_backend_cuda_get_device_count();
         if (count > 0) {
@@ -305,13 +308,14 @@ static void get_gpu_info(GPUInfo* info) {
             info->total_memory_gb = props.totalGlobalMem / 1073741824.0;
             info->core_count = props.multiProcessorCount;
             info->capability = atof(props.compute);
+            strncpy(info->manufacturer, llamafile_has_amd_gpu() ? "AMD" : "NVIDIA", MAX_STRING_LENGTH - 1);
 
-            printf("\033[0;32m===== GPU information =====\n\n");
-            printf("%-26s %s\n", "GPU Name:", info->name);
-            printf("%-26s %.2f GiB\n", "VRAM:", info->total_memory_gb);
-            printf("%-26s %d\n", "Streaming Multiprocessors:", info->core_count);
-            printf("%-26s %.1f\n", "CUDA Capability:", info->capability);
-            printf("\n============================\n\n\033[0m");
+            // printf("\033[0;32m===== GPU information =====\n\n");
+            // printf("%-26s %s\n", "GPU Name:", info->name);
+            // printf("%-26s %.2f GiB\n", "VRAM:", info->total_memory_gb);
+            // printf("%-26s %d\n", "Streaming Multiprocessors:", info->core_count);
+            // printf("%-26s %.1f\n", "CUDA Capability:", info->capability);
+            // printf("\n============================\n\n\033[0m");
         }
     }
 
@@ -334,14 +338,20 @@ static void get_gpu_info(GPUInfo* info) {
 
         ggml_backend_metal_get_device_properties(result, &props);
 
-        printf("\033[0;32m===== GPU information =====\n\n");
-        printf("%-26s %s\n", "GPU Name:", props.name);
-        printf("%-26s %.2f GiB\n", "VRAM:", props.memory);
-        printf("%-26s %d\n", "Core Count:", props.core_count);
-        printf("%-26s %d\n", "Metal Version:", props.metal_version);
-        printf("%-26s %d\n", "GPU Family:", props.gpu_family);
-        printf("%-26s %d\n", "Common GPU Family:", props.gpu_family_common);
-        printf("\n============================\n\n\033[0m");
+        strncpy(info->name, props.name, MAX_STRING_LENGTH - 1);
+        info->total_memory_gb = props.memory;
+        info->core_count = props.core_count;
+        info->capability = props.metal_version;
+        strncpy(info->manufacturer, "APPLE", MAX_STRING_LENGTH - 1);
+
+        // printf("\033[0;32m===== GPU information =====\n\n");
+        // printf("%-26s %s\n", "GPU Name:", props.name);
+        // printf("%-26s %.2f GiB\n", "VRAM:", props.memory);
+        // printf("%-26s %d\n", "Core Count:", props.core_count);
+        // printf("%-26s %d\n", "Metal Version:", props.metal_version);
+        // printf("%-26s %d\n", "GPU Family:", props.gpu_family);
+        // printf("%-26s %d\n", "Common GPU Family:", props.gpu_family_common);
+        // printf("\n============================\n\n\033[0m");
     }
     // TODO: other backends (metal)
     // macos: get gpu cores `system_profiler -detailLevel basic SPDisplaysDataType | grep 'Total Number of Cores'`
@@ -943,8 +953,12 @@ struct test {
     static const bool blas;
     static const std::string cpu_info;
     static const std::string gpu_info;
+    std::string name;
+    std::string model_name;
     std::string model_filename;
     std::string model_type;
+    std::string model_quant_str;
+    std::string model_params_str;
     uint64_t model_size;
     uint64_t model_n_params;
     int n_batch;
@@ -983,8 +997,14 @@ struct test {
         char buf[128];
         llama_model_desc(lmodel, buf, sizeof(buf));
         model_type = buf;
+        llama_model_meta_val_str(lmodel, "general.name", buf, sizeof(buf));
+        model_name = buf;
+        llama_model_quant_str(lmodel, buf, sizeof(buf));
+        model_quant_str = buf;
         model_size = llama_model_size(lmodel);
         model_n_params = llama_model_n_params(lmodel);
+        llama_model_meta_val_str(lmodel, "general.size_label", buf, sizeof(buf));
+        model_params_str = buf;
         n_batch = inst.n_batch;
         n_ubatch = inst.n_ubatch;
         n_threads = inst.n_threads;
@@ -1008,6 +1028,15 @@ struct test {
         monitor_result = {0.0, 0.0f};
         pwr_sampler = sampler;
 
+        if (n_prompt > 0 && n_gen == 0) {
+            snprintf(buf, sizeof(buf), "pp%d", n_prompt);
+        } else if (n_gen > 0 && n_prompt == 0) {
+            snprintf(buf, sizeof(buf), "tg%d", n_gen);
+        } else {
+            snprintf(buf, sizeof(buf), "pp%d+tg%d", n_prompt, n_gen);
+        }
+        name = buf;
+
         // RFC 3339 date-time format
         time_t t = time(NULL);
         std::strftime(buf, sizeof(buf), "%FT%TZ", gmtime(&t));
@@ -1020,6 +1049,7 @@ struct test {
         llama_kv_cache_clear(ctx);
 
         // warmup run
+        // TODO: add warmup run, to lower stddev
         // if (n_prompt > 0) {
         //     test_prompt();
         // }
@@ -1175,6 +1205,13 @@ struct test {
         return ::stdev(get_ts(metric));
     }
 
+    double ttft() const {
+        if (time_to_first_token.empty()) {
+            return 0.0;
+        }
+        return avg(time_to_first_token); 
+    }
+
     static std::string get_backend() {
         if (cuda) {
             return GGML_CUDA_NAME;
@@ -1207,17 +1244,20 @@ struct test {
     static const std::vector<std::string> & get_fields() {
         static const std::vector<std::string> fields = {
             "build_commit", "build_number",
-            "cuda", "opencl", "vulkan", "kompute", "metal", "sycl", "gpu_blas", "blas",
-            "cpu_info", "gpu_info",
+            "model_name", "model_quant_str", "model_params_str",
+            // "cuda", "opencl", "vulkan", "kompute", "metal", "sycl", "gpu_blas", "blas",
+            // "cpu_info", "gpu_info",
             "model_filename", "model_type", "model_size", "model_n_params",
-            "n_batch", "n_ubatch",
-            "n_threads", "type_k", "type_v",
-            "n_gpu_layers", "split_mode",
-            "main_gpu", "no_kv_offload", "flash_attn",
-            "tensor_split", "use_mmap", "embeddings",
+            // "n_batch", "n_ubatch",
+            // "n_threads", "type_k", "type_v",
+            // "n_gpu_layers", "split_mode",
+            // "main_gpu", "no_kv_offload", "flash_attn",
+            // "tensor_split", "use_mmap", "embeddings",
             "n_prompt", "n_gen", "test_time",
-            "avg_ns", "stddev_ns",
-            "avg_ts", "stddev_ts"
+            "avg_time_ms", "stddev_time_ms",
+            "prompt_tps", "prompt_tps_watt", "prompt_tps_stddev",
+            "gen_tps", "gen_tps_watt", "gen_tps_stddev",
+            "name", "power_watts", "vram_used_mb", "ttft_ms"
         };
         return fields;
     }
@@ -1230,7 +1270,8 @@ struct test {
             field == "model_size" || field == "model_n_params" ||
             field == "n_gpu_layers" || field == "main_gpu" ||
             field == "n_prompt" || field == "n_gen" ||
-            field == "avg_ns" || field == "stddev_ns") {
+            field == "avg_time_ms" || field == "stddev_time_ms" || 
+            field == "ttft_ms") {
             return INT;
         }
         if (field == "cuda" || field == "opencl"  || field == "vulkan" || field == "kompute" || field == "metal" ||
@@ -1238,7 +1279,9 @@ struct test {
             field == "flash_attn" || field == "use_mmap" || field == "embeddings") {
             return BOOL;
         }
-        if (field == "avg_ts" || field == "stddev_ts") {
+        if (field == "prompt_tps" || field == "prompt_tps_watt" || field == "prompt_tps_stddev" ||
+            field == "gen_tps" || field == "gen_tps_watt" || field == "gen_tps_stddev" ||
+            field == "power_watts" || field == "vram_used_mb") {
             return FLOAT;
         }
         return STRING;
@@ -1260,20 +1303,25 @@ struct test {
                 tensor_split_str += "/";
             }
         }
+        double power = get_power();
+
         std::vector<std::string> values = {
             build_commit, std::to_string(build_number),
-            std::to_string(cuda), std::to_string(opencl), std::to_string(vulkan), std::to_string(vulkan),
-            std::to_string(metal), std::to_string(sycl), std::to_string(gpu_blas), std::to_string(blas),
-            cpu_info, gpu_info,
+            model_name, model_quant_str, model_params_str,
+            // std::to_string(cuda), std::to_string(opencl), std::to_string(vulkan), std::to_string(vulkan),
+            // std::to_string(metal), std::to_string(sycl), std::to_string(gpu_blas), std::to_string(blas),
+            // cpu_info, gpu_info,
             model_filename, model_type, std::to_string(model_size), std::to_string(model_n_params),
-            std::to_string(n_batch), std::to_string(n_ubatch),
-            std::to_string(n_threads), ggml_type_name(type_k), ggml_type_name(type_v),
-            std::to_string(n_gpu_layers), split_mode_str(split_mode),
-            std::to_string(main_gpu), std::to_string(no_kv_offload), std::to_string(flash_attn),
-            tensor_split_str, std::to_string(use_mmap), std::to_string(embeddings),
+            // std::to_string(n_batch), std::to_string(n_ubatch),
+            // std::to_string(n_threads), ggml_type_name(type_k), ggml_type_name(type_v),
+            // std::to_string(n_gpu_layers), split_mode_str(split_mode),
+            // std::to_string(main_gpu), std::to_string(no_kv_offload), std::to_string(flash_attn),
+            // tensor_split_str, std::to_string(use_mmap), std::to_string(embeddings),
             std::to_string(n_prompt), std::to_string(n_gen), test_time,
-            std::to_string(avg_ns()), std::to_string(stdev_ns()),
-            std::to_string(avg_ts()), std::to_string(stdev_ts())
+            std::to_string(avg_ns() / 1e6), std::to_string(stdev_ns() / 1e6),
+            std::to_string(avg_ts(PROMPT_TPS)), std::to_string(avg_ts(PROMPT_TPS) / power), std::to_string(stdev_ts(PROMPT_TPS)),
+            std::to_string(avg_ts(GEN_TPS)), std::to_string(avg_ts(GEN_TPS) / power), std::to_string(stdev_ts(GEN_TPS)),
+            name, std::to_string(power), std::to_string(monitor_result.vram), std::to_string(ttft() / 1e6)
         };
         return values;
     }
@@ -1305,7 +1353,7 @@ struct printer {
     virtual ~printer() {}
 
     FILE * fout;
-    virtual void print_header(const cmd_params & params) { (void) params; }
+    virtual void print_header(const cmd_params & params, GPUInfo gpu_info, RuntimeInfo runtime_info, SystemInfo sys_info) { (void) params; }
     virtual void print_test(const test & t) = 0;
     virtual void print_footer() { }
 };
@@ -1323,7 +1371,7 @@ struct csv_printer : public printer {
         return escaped;
     }
 
-    void print_header(const cmd_params & params) override  {
+    void print_header(const cmd_params & params, GPUInfo gpu_info, RuntimeInfo runtime_info, SystemInfo sys_info) override  {
         std::vector<std::string> fields = test::get_fields();
         fprintf(fout, "%s\n", join(fields, ",").c_str());
         (void) params;
@@ -1368,15 +1416,45 @@ struct json_printer : public printer {
         }
     }
 
-    void print_header(const cmd_params & params) override {
-        fprintf(fout, "[\n");
-        (void) params;
-    }
+void print_header(const cmd_params & params, GPUInfo gpu_info, RuntimeInfo runtime_info, SystemInfo sys_info) override {
+    fprintf(fout, "{\n");
+    
+    // Print RuntimeInfo object
+    fprintf(fout, "  \"runtime_info\": {\n");
+    fprintf(fout, "    \"name\": \"%s\",\n", "llamafile");
+    fprintf(fout, "    \"version\": \"%s\",\n", runtime_info.llamafile_version);
+    fprintf(fout, "    \"commit\": \"%s\"\n", runtime_info.llama_commit);
+    fprintf(fout, "  },\n");
+
+    // Print SystemInfo object
+    fprintf(fout, "  \"system_info\": {\n");
+    fprintf(fout, "    \"cpu_name\": \"%s\",\n", sys_info.cpu);
+    fprintf(fout, "    \"cpu_arch\": \"%s\",\n", sys_info.system_architecture);
+    fprintf(fout, "    \"ram_gb\": %.2f,\n", sys_info.ram_gb);
+    fprintf(fout, "    \"kernel_type\": \"%s\",\n", sys_info.kernel_type);
+    fprintf(fout, "    \"kernel_release\": \"%s\",\n", sys_info.kernel_release);
+    fprintf(fout, "    \"version\": \"%s\"\n", sys_info.version);
+    fprintf(fout, "  },\n");
+
+    // Print GPUInfo object
+    fprintf(fout, "  \"accelerator_info\": {\n");
+    fprintf(fout, "    \"name\": \"%s\",\n", gpu_info.name);
+    fprintf(fout, "    \"manufacturer\": \"%s\",\n", gpu_info.manufacturer);
+    fprintf(fout, "    \"memory_gb\": %.2f,\n", gpu_info.total_memory_gb);
+    // TODO
+    fprintf(fout, "    \"type\": \"%s\"\n", (FLAG_gpu >= 0 && llamafile_has_gpu()) ? "GPU" : "CPU");
+    fprintf(fout, "  },\n");
+
+    // Start the results array
+    fprintf(fout, "  \"results\": [\n");
+    
+    (void) params;
+}
 
     void print_fields(const std::vector<std::string> & fields, const std::vector<std::string> & values) {
         assert(fields.size() == values.size());
         for (size_t i = 0; i < fields.size(); i++) {
-            fprintf(fout, "    \"%s\": %s,\n", fields.at(i).c_str(), format_value(fields.at(i), values.at(i)).c_str());
+            fprintf(fout, "      \"%s\": %s,\n", fields.at(i).c_str(), format_value(fields.at(i), values.at(i)).c_str());
         }
     }
 
@@ -1386,16 +1464,17 @@ struct json_printer : public printer {
         } else {
             fprintf(fout, ",\n");
         }
-        fprintf(fout, "  {\n");
+        fprintf(fout, "    {\n");
         print_fields(test::get_fields(), t.get_values());
-        fprintf(fout, "    \"samples_ns\": [ %s ],\n", join(t.get_samples_ns(), ", ").c_str());
-        fprintf(fout, "    \"samples_ts\": [ %s ]\n", join(t.get_ts(), ", ").c_str());
-        fprintf(fout, "  }");
+        fprintf(fout, "      \"samples_ns\": [ %s ],\n", join(t.get_samples_ns(), ", ").c_str());
+        fprintf(fout, "      \"samples_ts\": [ %s ]\n", join(t.get_ts(), ", ").c_str());
+        fprintf(fout, "    }");
         fflush(fout);
     }
 
     void print_footer() override {
-        fprintf(fout, "\n]\n");
+        fprintf(fout, "\n  ]\n");
+        fprintf(fout, "}");
     }
 };
 
@@ -1469,7 +1548,7 @@ struct markdown_printer : public printer {
         return field;
     }
 
-    void print_header(const cmd_params & params) override {
+    void print_header(const cmd_params & params, GPUInfo gpu_info, RuntimeInfo runtime_info, SystemInfo sys_info) override {
         // select fields to print
         // fields.emplace_back("cpu_info"); // [jart]
         // fields.emplace_back("gpu_info"); // [jart]
@@ -1479,7 +1558,7 @@ struct markdown_printer : public printer {
         fields.emplace_back("test");
         fields.emplace_back("run number");
         // fields.emplace_back("size"); // [jart]
-        fields.emplace_back("params"); // [jart]
+        // fields.emplace_back("params"); // [jart]
         // fields.emplace_back("backend"); // [jart]
         fields.emplace_back("avg time"); // [jart]
         fields.emplace_back("power");
@@ -1576,14 +1655,7 @@ struct markdown_printer : public printer {
                 snprintf(buf, sizeof(buf), "%d/%d", t.curr_run + 1, t.reps);
                 value = buf;
             } else if (field == "test") {
-                if (t.n_prompt > 0 && t.n_gen == 0) {
-                    snprintf(buf, sizeof(buf), "pp%d", t.n_prompt);
-                } else if (t.n_gen > 0 && t.n_prompt == 0) {
-                    snprintf(buf, sizeof(buf), "tg%d", t.n_gen);
-                } else {
-                    snprintf(buf, sizeof(buf), "pp%d+tg%d", t.n_prompt, t.n_gen);
-                }
-                value = buf;
+                value = t.name;
             } else if (field == "pp t/s") {
                 snprintf(buf, sizeof(buf), "%.2f", t.avg_ts(PROMPT_TPS));
 
@@ -1608,12 +1680,7 @@ struct markdown_printer : public printer {
 
                 value = buf;
             } else if (field == "ttft") {
-                if (!t.time_to_first_token.empty()) {
-                    double avg_ttft = std::accumulate(t.time_to_first_token.begin(), t.time_to_first_token.end(), 0.0) / t.time_to_first_token.size();
-                    snprintf(buf, sizeof(buf), "%.2f ms", avg_ttft / 1e6);
-                } else {
-                    snprintf(buf, sizeof(buf), "N/A");
-                }
+                snprintf(buf, sizeof(buf), "%.2f ms", t.ttft() / 1e6);
 
                 value = buf;
             } else if (field == "power") {
@@ -1685,7 +1752,7 @@ struct sql_printer : public printer {
         }
     }
 
-    void print_header(const cmd_params & params) override {
+    void print_header(const cmd_params & params, GPUInfo gpu_info, RuntimeInfo runtime_info, SystemInfo sys_info) override {
         std::vector<std::string> fields = test::get_fields();
         fprintf(fout, "CREATE TABLE IF NOT EXISTS test (\n");
         for (size_t i = 0; i < fields.size(); i++) {
@@ -1787,7 +1854,9 @@ int main(int argc, char ** argv) {
     FLAGS_READY = true;
 
     GPUInfo gpu_info;
-    get_gpu_info(&gpu_info);
+    if (FLAG_gpu != LLAMAFILE_GPU_DISABLE) {
+        get_gpu_info(&gpu_info);
+    }
 
     RuntimeInfo runtime_info;
     get_runtime_info(&runtime_info);
@@ -1824,7 +1893,7 @@ int main(int argc, char ** argv) {
             exit(1);
     }
     p->fout = stdout;
-    p->print_header(params);
+    p->print_header(params, gpu_info, runtime_info, sys_info);
 
     std::vector<cmd_params_instance> params_instances = get_cmd_params_instances(params);
 
@@ -1913,6 +1982,7 @@ int main(int argc, char ** argv) {
 
         llama_context_params cparams = inst.to_llama_cparams();
         cparams.n_ctx = test_cfg.n_prompt + test_cfg.n_gen;
+
 
         llama_context * ctx = llama_new_context_with_model(lmodel, cparams);
         if (ctx == NULL) {
