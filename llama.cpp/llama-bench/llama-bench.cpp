@@ -1212,7 +1212,7 @@ struct test {
         if (time_to_first_token.empty()) {
             return 0.0;
         }
-        return avg(ttft_times);
+        return avg(time_to_first_token);
     }
 
     static std::string get_backend() {
