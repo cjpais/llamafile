@@ -1134,7 +1134,6 @@ struct test {
             llama_decode(ctx, llama_batch_get_one(&token, 1, n_prompt + i, 0));
             llama_synchronize(ctx);
             if (i == 0) {
-                printf("test start time: %lu, time to first token: %lu\n\n", test_intervals.back().start, get_time_ns() - test_intervals.back().start);
                 uint64_t ttft = get_time_ns() - test_intervals.back().start;
                 time_to_first_token.push_back(ttft);
             }
@@ -1213,7 +1212,7 @@ struct test {
         if (time_to_first_token.empty()) {
             return 0.0;
         }
-        return avg(time_to_first_token);
+        return avg(ttft_times);
     }
 
     static std::string get_backend() {
@@ -1908,63 +1907,63 @@ int main(int argc, char ** argv) {
 
     pthread_t print_thread;
 
-    // for (const auto & base_inst : params_instances) {
-    //     int num_gen = base_inst.n_prompt > 0 ? 4096: 2048;
-    //     for (int context_size = 16; context_size <= num_gen; context_size *= 2) {
-    //         // TODO this is a total hack.
-    //         cmd_params_instance inst = base_inst;
-    //         if (base_inst.n_prompt > 0) {
-    //             inst.n_prompt = context_size;
-    //         } else {
-    //             inst.n_gen = context_size;
-    //         }
+    for (const auto & base_inst : params_instances) {
+        int num_gen = base_inst.n_prompt > 0 ? 4096: 2048;
+        for (int context_size = 16; context_size <= num_gen; context_size *= 2) {
+            // TODO this is a total hack.
+            cmd_params_instance inst = base_inst;
+            if (base_inst.n_prompt > 0) {
+                inst.n_prompt = context_size;
+            } else {
+                inst.n_gen = context_size;
+            }
 
-    //         // keep the same model between tests when possible
-    //         if (!lmodel || !prev_inst || !inst.equal_mparams(*prev_inst)) {
-    //             if (lmodel) {
-    //                 llama_free_model(lmodel);
-    //             }
+            // keep the same model between tests when possible
+            if (!lmodel || !prev_inst || !inst.equal_mparams(*prev_inst)) {
+                if (lmodel) {
+                    llama_free_model(lmodel);
+                }
 
-    //             lmodel = llama_load_model_from_file(inst.model.c_str(), inst.to_llama_mparams());
-    //             if (lmodel == NULL) {
-    //                 fprintf(stderr, "%s: error: failed to load model '%s'\n", __func__, inst.model.c_str());
-    //                 return 1;
-    //             }
+                lmodel = llama_load_model_from_file(inst.model.c_str(), inst.to_llama_mparams());
+                if (lmodel == NULL) {
+                    fprintf(stderr, "%s: error: failed to load model '%s'\n", __func__, inst.model.c_str());
+                    return 1;
+                }
 
-    //             // TODO build a json payload still..
-    //             // printf("Model N Params: %d\n", llama_model_n_params(lmodel));
+                // TODO build a json payload still..
+                // printf("Model N Params: %d\n", llama_model_n_params(lmodel));
 
-    //             prev_inst = &inst;
-    //         }
+                prev_inst = &inst;
+            }
 
-    //         llama_context_params cparams = inst.to_llama_cparams();
-    //         cparams.n_ctx = context_size;
+            llama_context_params cparams = inst.to_llama_cparams();
+            cparams.n_ctx = context_size;
 
-    //         llama_context * ctx = llama_new_context_with_model(lmodel, cparams);
-    //         if (ctx == NULL) {
-    //             fprintf(stderr, "%s: error: failed to create context with model '%s'\n", __func__, inst.model.c_str());
-    //             llama_free_model(lmodel);
-    //             return 1;
-    //         }
+            llama_context * ctx = llama_new_context_with_model(lmodel, cparams);
+            if (ctx == NULL) {
+                fprintf(stderr, "%s: error: failed to create context with model '%s'\n", __func__, inst.model.c_str());
+                llama_free_model(lmodel);
+                return 1;
+            }
 
-    //         test t(inst, lmodel, ctx, params.reps, sampler);
+            test t(inst, lmodel, ctx, params.reps, sampler);
 
-    //         update_t_gen_column_args argv = {t, p.get()};
-    //         pthread_t update_thread;
-    //         int rc = pthread_create(&update_thread, NULL, update_t_gen_column, &argv);
-    //         if (rc) {
-    //             std::cerr << "Error creating pthread: " << rc << std::endl;
-    //             return EXIT_FAILURE;
-    //         }
-    //         t.run();
+            update_t_gen_column_args argv = {t, p.get()};
+            pthread_t update_thread;
+            int rc = pthread_create(&update_thread, NULL, update_t_gen_column, &argv);
+            if (rc) {
+                std::cerr << "Error creating pthread: " << rc << std::endl;
+                return EXIT_FAILURE;
+            }
+            t.run();
 
-    //         pthread_join(update_thread, NULL);
+            pthread_join(update_thread, NULL);
 
-    //         llama_print_timings(ctx);
+            llama_print_timings(ctx);
 
-    //         llama_free(ctx);
-    //     }
-    // }
+            llama_free(ctx);
+        }
+    }
 
     for (const auto & test_cfg : baseline_tests) {
         cmd_params_instance inst = params_instances.front();
