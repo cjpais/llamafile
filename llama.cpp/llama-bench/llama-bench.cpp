@@ -111,6 +111,34 @@ static void cpuid(unsigned leaf, unsigned subleaf, unsigned *info) {
         : "=a"(info[0]), "=S"(info[1]), "=c"(info[2]), "=d"(info[3])
         : "0"(leaf), "2"(subleaf));
 }
+
+// TODO implement an arm version as well
+char* get_cpu_manufacturer(void) {
+    union {
+        char str[13];      // 12 chars + null terminator
+        unsigned reg[4];   // For the 4 registers (EAX, EBX, ECX, EDX)
+    } u = {0};            // Initialize to zero
+
+    // Get manufacturer ID with leaf 0
+    cpuid(0, 0, u.reg);
+
+    // Rearrange the registers to get the correct string
+    // The manufacturer string is in EBX,EDX,ECX order
+    unsigned temp = u.reg[1];        // Save EBX
+    u.reg[0] = temp;                 // Move EBX to first position
+    u.reg[1] = u.reg[3];             // Move EDX to second position
+    u.reg[2] = u.reg[2];             // ECX stays in third position
+    u.reg[3] = 0;                     // Ensure null termination
+
+    const char* manufacturer = u.str;
+    if (strcmp(manufacturer, "AuthenticAMD") == 0) {
+        return strdup("AMD");
+    } else if (strcmp(manufacturer, "GenuineIntel") == 0) {
+        return strdup("Intel");
+    }
+
+    return strdup(manufacturer);  // Return the original string if unknown
+}
 #endif // __x86_64__
 
 static std::string get_cpu_info() { // [jart]
@@ -232,7 +260,7 @@ typedef struct {
     double total_memory_gb;
     int core_count;
     double capability;
-} GPUInfo;
+} AcceleratorInfo;
 
 static void get_runtime_info(RuntimeInfo* info) {
     if (info == NULL) return;
@@ -246,16 +274,20 @@ static void get_runtime_info(RuntimeInfo* info) {
     // printf("\n===============================================\n\n\033[0m");
 }
 
+static double get_mem_gb() {
+    struct sysinfo si;
+    if (sysinfo(&si)) {
+        return 0.0;
+    }
+
+    return si.totalram * si.mem_unit / 1073741824.0;
+}
+
 static void get_sys_info(SystemInfo* info) {
     if (info == NULL) return;
 
     struct utsname names;
     if (uname(&names)) {
-        return;
-    }
-
-    struct sysinfo si;
-    if (sysinfo(&si)) {
         return;
     }
 
@@ -268,7 +300,7 @@ static void get_sys_info(SystemInfo* info) {
     std::string cpu_info = get_cpu_info();
     strncpy(info->cpu, cpu_info.c_str(), MAX_STRING_LENGTH - 1);
 
-    info->ram_gb = si.totalram * si.mem_unit / 1073741824.0;
+    info->ram_gb = get_mem_gb();
 
     // printf("===== system information =====\n\n");
     // printf("%-20s %s\n", "Kernel Type:", info->kernel_type);
@@ -293,67 +325,80 @@ std::string exec(const char* cmd) {
     return result;
 }
 
-// TODO rename to accelerator. can be cpu or gpu dependent on enablement of ngl
-static void get_gpu_info(GPUInfo* info) {
+// TODO move this into it's own file, sys info or something
+static void get_accelerator_info(AcceleratorInfo* info) {
     if (info == NULL) return;
 
-    // TODO: Check if GPU is enabled. otherwise get cpu info.
+    if (FLAG_gpu >= 0 && llamafile_has_gpu()) {
+        if (llamafile_has_cuda()) {
+            int count = ggml_backend_cuda_get_device_count();
+            if (count > 0) {
+                struct ggml_cuda_device_properties props;
+                ggml_backend_cuda_get_device_properties(0, &props);
 
-    if (llamafile_has_cuda()) {
-        int count = ggml_backend_cuda_get_device_count();
-        if (count > 0) {
-            struct ggml_cuda_device_properties props;
-            ggml_backend_cuda_get_device_properties(0, &props);
+                strncpy(info->name, props.name, MAX_STRING_LENGTH - 1);
+                info->total_memory_gb = props.totalGlobalMem / 1073741824.0;
+                info->core_count = props.multiProcessorCount;
+                info->capability = atof(props.compute);
+                strncpy(info->manufacturer, llamafile_has_amd_gpu() ? "AMD" : "NVIDIA", MAX_STRING_LENGTH - 1);
+
+                // printf("\033[0;32m===== GPU information =====\n\n");
+                // printf("%-26s %s\n", "GPU Name:", info->name);
+                // printf("%-26s %.2f GiB\n", "VRAM:", info->total_memory_gb);
+                // printf("%-26s %d\n", "Streaming Multiprocessors:", info->core_count);
+                // printf("%-26s %.1f\n", "CUDA Capability:", info->capability);
+                // printf("\n============================\n\n\033[0m");
+            }
+        }
+
+        if (llamafile_has_metal()) {
+            // TODO there is probably a cleaner way of doing this. we should only need to init once.
+            // this is probably the same issue why the other thing is init multiple time too
+            struct ggml_metal_device_properties props;
+
+            std::string command = "system_profiler SPDisplaysDataType | grep \"Total Number of Cores:\" | awk '{print $5}'";
+            std::string num_cores = exec(command.c_str());
+            props.core_count = std::stoi(num_cores);
+
+            // Remove any trailing newline
+            if (!num_cores.empty() && num_cores[num_cores.length()-1] == '\n') {
+                num_cores.erase(num_cores.length()-1);
+            }
+
+
+            ggml_backend_t result = ggml_backend_metal_init();
+
+            ggml_backend_metal_get_device_properties(result, &props);
 
             strncpy(info->name, props.name, MAX_STRING_LENGTH - 1);
-            info->total_memory_gb = props.totalGlobalMem / 1073741824.0;
-            info->core_count = props.multiProcessorCount;
-            info->capability = atof(props.compute);
-            strncpy(info->manufacturer, llamafile_has_amd_gpu() ? "AMD" : "NVIDIA", MAX_STRING_LENGTH - 1);
+            info->total_memory_gb = props.memory;
+            info->core_count = props.core_count;
+            info->capability = props.metal_version;
+            strncpy(info->manufacturer, "APPLE", MAX_STRING_LENGTH - 1);
 
             // printf("\033[0;32m===== GPU information =====\n\n");
-            // printf("%-26s %s\n", "GPU Name:", info->name);
-            // printf("%-26s %.2f GiB\n", "VRAM:", info->total_memory_gb);
-            // printf("%-26s %d\n", "Streaming Multiprocessors:", info->core_count);
-            // printf("%-26s %.1f\n", "CUDA Capability:", info->capability);
+            // printf("%-26s %s\n", "GPU Name:", props.name);
+            // printf("%-26s %.2f GiB\n", "VRAM:", props.memory);
+            // printf("%-26s %d\n", "Core Count:", props.core_count);
+            // printf("%-26s %d\n", "Metal Version:", props.metal_version);
+            // printf("%-26s %d\n", "GPU Family:", props.gpu_family);
+            // printf("%-26s %d\n", "Common GPU Family:", props.gpu_family_common);
             // printf("\n============================\n\n\033[0m");
         }
+    } else {
+        #ifdef __x86_64__
+            strncpy(info->manufacturer, get_cpu_manufacturer(), MAX_STRING_LENGTH - 1); // TODO hit registers
+        #else
+            if IsXnu() {
+                strncpy(info->manufacturer, "Apple", MAX_STRING_LENGTH - 1); // TODO hit registers
+            } else {
+                strncpy(info->manufacturer, "Unknown", MAX_STRING_LENGTH - 1); // TODO hit registers
+            }
+        #endif
+        strncpy(info->name, get_cpu_info().c_str(), MAX_STRING_LENGTH - 1);
+        info->total_memory_gb = get_mem_gb(); 
     }
 
-    if (llamafile_has_metal()) {
-        // TODO there is probably a cleaner way of doing this. we should only need to init once.
-        // this is probably the same issue why the other thing is init multiple time too
-        struct ggml_metal_device_properties props;
-
-        std::string command = "system_profiler SPDisplaysDataType | grep \"Total Number of Cores:\" | awk '{print $5}'";
-        std::string num_cores = exec(command.c_str());
-        props.core_count = std::stoi(num_cores);
-
-        // Remove any trailing newline
-        if (!num_cores.empty() && num_cores[num_cores.length()-1] == '\n') {
-            num_cores.erase(num_cores.length()-1);
-        }
-
-
-        ggml_backend_t result = ggml_backend_metal_init();
-
-        ggml_backend_metal_get_device_properties(result, &props);
-
-        strncpy(info->name, props.name, MAX_STRING_LENGTH - 1);
-        info->total_memory_gb = props.memory;
-        info->core_count = props.core_count;
-        info->capability = props.metal_version;
-        strncpy(info->manufacturer, "APPLE", MAX_STRING_LENGTH - 1);
-
-        // printf("\033[0;32m===== GPU information =====\n\n");
-        // printf("%-26s %s\n", "GPU Name:", props.name);
-        // printf("%-26s %.2f GiB\n", "VRAM:", props.memory);
-        // printf("%-26s %d\n", "Core Count:", props.core_count);
-        // printf("%-26s %d\n", "Metal Version:", props.metal_version);
-        // printf("%-26s %d\n", "GPU Family:", props.gpu_family);
-        // printf("%-26s %d\n", "Common GPU Family:", props.gpu_family_common);
-        // printf("\n============================\n\n\033[0m");
-    }
     // TODO: other backends (metal)
     // macos: get gpu cores `system_profiler -detailLevel basic SPDisplaysDataType | grep 'Total Number of Cores'`
 }
@@ -1208,6 +1253,17 @@ struct test {
         return ::stdev(get_ts(metric));
     }
 
+    double get_tps_watt(token_metric metric = TOTAL_TPS) const {
+        double power = get_power();
+        double ts = avg_ts(metric);
+
+        if (ts == 0.0 || power == 0.0) {
+            return 0.0;
+        }
+
+        return avg_ts(metric) / get_power();
+    }
+
     double ttft() const {
         if (time_to_first_token.empty()) {
             return 0.0;
@@ -1322,8 +1378,8 @@ struct test {
             // tensor_split_str, std::to_string(use_mmap), std::to_string(embeddings),
             std::to_string(n_prompt), std::to_string(n_gen), test_time,
             std::to_string(avg_ns() / 1e6), std::to_string(stdev_ns() / 1e6),
-            std::to_string(avg_ts(PROMPT_TPS)), std::to_string(avg_ts(PROMPT_TPS) / power), std::to_string(stdev_ts(PROMPT_TPS)),
-            std::to_string(avg_ts(GEN_TPS)), std::to_string(avg_ts(GEN_TPS) / power), std::to_string(stdev_ts(GEN_TPS)),
+            std::to_string(avg_ts(PROMPT_TPS)), std::to_string(get_tps_watt(PROMPT_TPS)), std::to_string(stdev_ts(PROMPT_TPS)),
+            std::to_string(avg_ts(GEN_TPS)), std::to_string(get_tps_watt(GEN_TPS)), std::to_string(stdev_ts(GEN_TPS)),
             name, std::to_string(power), std::to_string(monitor_result.vram), std::to_string(ttft() / 1e6)
         };
         return values;
@@ -1356,7 +1412,7 @@ struct printer {
     virtual ~printer() {}
 
     FILE * fout;
-    virtual void print_header(const cmd_params & params, GPUInfo gpu_info, RuntimeInfo runtime_info, SystemInfo sys_info) { (void) params; }
+    virtual void print_header(const cmd_params & params, AcceleratorInfo accelerator_info, RuntimeInfo runtime_info, SystemInfo sys_info) { (void) params; }
     virtual void print_test(const test & t) = 0;
     virtual void print_footer() { }
 };
@@ -1374,7 +1430,7 @@ struct csv_printer : public printer {
         return escaped;
     }
 
-    void print_header(const cmd_params & params, GPUInfo gpu_info, RuntimeInfo runtime_info, SystemInfo sys_info) override  {
+    void print_header(const cmd_params & params, AcceleratorInfo accelerator_info, RuntimeInfo runtime_info, SystemInfo sys_info) override  {
         std::vector<std::string> fields = test::get_fields();
         fprintf(fout, "%s\n", join(fields, ",").c_str());
         (void) params;
@@ -1419,7 +1475,7 @@ struct json_printer : public printer {
         }
     }
 
-void print_header(const cmd_params & params, GPUInfo gpu_info, RuntimeInfo runtime_info, SystemInfo sys_info) override {
+void print_header(const cmd_params & params, AcceleratorInfo gpu_info, RuntimeInfo runtime_info, SystemInfo sys_info) override {
     fprintf(fout, "{\n");
     
     // Print RuntimeInfo object
@@ -1551,7 +1607,7 @@ struct markdown_printer : public printer {
         return field;
     }
 
-    void print_header(const cmd_params & params, GPUInfo gpu_info, RuntimeInfo runtime_info, SystemInfo sys_info) override {
+    void print_header(const cmd_params & params, AcceleratorInfo gpu_info, RuntimeInfo runtime_info, SystemInfo sys_info) override {
         // select fields to print
         // fields.emplace_back("cpu_info"); // [jart]
         // fields.emplace_back("gpu_info"); // [jart]
@@ -1675,11 +1731,11 @@ struct markdown_printer : public printer {
 
                 value = buf;
             } else if (field == "pp t/s/watt") {
-                snprintf(buf, sizeof(buf), "%.4f", t.avg_ts(PROMPT_TPS) / power);
+                snprintf(buf, sizeof(buf), "%.4f", t.get_tps_watt(PROMPT_TPS));
 
                 value = buf;
             } else if (field == "tg t/s/watt") {
-                snprintf(buf, sizeof(buf), "%.4f", t.avg_ts(GEN_TPS) / power);
+                snprintf(buf, sizeof(buf), "%.4f", t.get_tps_watt(GEN_TPS));
 
                 value = buf;
             } else if (field == "ttft") {
@@ -1755,7 +1811,7 @@ struct sql_printer : public printer {
         }
     }
 
-    void print_header(const cmd_params & params, GPUInfo gpu_info, RuntimeInfo runtime_info, SystemInfo sys_info) override {
+    void print_header(const cmd_params & params, AcceleratorInfo gpu_info, RuntimeInfo runtime_info, SystemInfo sys_info) override {
         std::vector<std::string> fields = test::get_fields();
         fprintf(fout, "CREATE TABLE IF NOT EXISTS test (\n");
         for (size_t i = 0; i < fields.size(); i++) {
@@ -1856,10 +1912,8 @@ int main(int argc, char ** argv) {
     cmd_params params = parse_cmd_params(argc, argv);
     FLAGS_READY = true;
 
-    GPUInfo gpu_info;
-    if (FLAG_gpu != LLAMAFILE_GPU_DISABLE) {
-        get_gpu_info(&gpu_info);
-    }
+    AcceleratorInfo accelerator_info;
+    get_accelerator_info(&accelerator_info);
 
     RuntimeInfo runtime_info;
     get_runtime_info(&runtime_info);
@@ -1896,7 +1950,7 @@ int main(int argc, char ** argv) {
             exit(1);
     }
     p->fout = stdout;
-    p->print_header(params, gpu_info, runtime_info, sys_info);
+    p->print_header(params, accelerator_info, runtime_info, sys_info);
 
     std::vector<cmd_params_instance> params_instances = get_cmd_params_instances(params);
 
