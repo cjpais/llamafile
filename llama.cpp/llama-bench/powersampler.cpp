@@ -1,5 +1,6 @@
 #include "powersampler.h"
 #include <unistd.h>
+#include <cosmo.h>
 
 #include "llamafile/llamafile.h"
 #include "llama.cpp/ggml-metal.h"
@@ -157,7 +158,7 @@ power_sample_t AMDPowerSampler::sample() {
     double power;
     float vram;
 
-    // if (!rsmi_get_power(&power)) { }
+    if (!rsmi_get_power(&power)) { }
     if (!rsmi_get_memory_usage(&vram)) { }
 
     sample.power = power;
@@ -231,10 +232,10 @@ double DummyPowerSampler::getEnergyConsumed() {
 
 // Update getPowerSampler function to return DummyPowerSampler if no other sampler is found
 PowerSampler* getPowerSampler(long sample_length_ms) {
-    if (llamafile_has_gpu() && FLAG_gpu != LLAMAFILE_GPU_DISABLE) {
-        if (llamafile_has_metal()) {
-            return new ApplePowerSampler(sample_length_ms);
-        } else if (llamafile_has_amd_gpu()) {
+    if (IsXnu()) {
+        return new ApplePowerSampler(sample_length_ms);
+    } else if (llamafile_has_gpu() && FLAG_gpu != LLAMAFILE_GPU_DISABLE) {
+        if (llamafile_has_amd_gpu()) {
             return new AMDPowerSampler(sample_length_ms);
         } else if (llamafile_has_cuda()) {
             return new NvidiaPowerSampler(sample_length_ms);

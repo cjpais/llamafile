@@ -219,11 +219,12 @@ static std::string get_cpu_info() { // [jart]
     if (__cpu_march(__cpu_model.__cpu_subtype))
         march = __cpu_march(__cpu_model.__cpu_subtype);
 #else
-    long hwcap = getauxval(AT_HWCAP);
-    if (hwcap & HWCAP_ASIMDHP)
-        march += "+fp16";
-    if (hwcap & HWCAP_ASIMDDP)
-        march += "+dotprod";
+    // TODO. We can do this separately as part of 'features' or something
+    // long hwcap = getauxval(AT_HWCAP);
+    // if (hwcap & HWCAP_ASIMDHP)
+    //     march += "+fp16";
+    // if (hwcap & HWCAP_ASIMDDP)
+    //     march += "+dotprod";
 #endif
 
     if (!march.empty()) {
@@ -365,16 +366,17 @@ static void get_accelerator_info(AcceleratorInfo* info) {
                 num_cores.erase(num_cores.length()-1);
             }
 
-
             ggml_backend_t result = ggml_backend_metal_init();
 
             ggml_backend_metal_get_device_properties(result, &props);
 
-            strncpy(info->name, props.name, MAX_STRING_LENGTH - 1);
+            std::string cpu_info = get_cpu_info();
+            cpu_info += "+" + num_cores + "GPU";
+            strncpy(info->name, cpu_info.c_str(), MAX_STRING_LENGTH - 1);
             info->total_memory_gb = props.memory;
             info->core_count = props.core_count;
             info->capability = props.metal_version;
-            strncpy(info->manufacturer, "APPLE", MAX_STRING_LENGTH - 1);
+            strncpy(info->manufacturer, "Apple", MAX_STRING_LENGTH - 1);
 
             // printf("\033[0;32m===== GPU information =====\n\n");
             // printf("%-26s %s\n", "GPU Name:", props.name);

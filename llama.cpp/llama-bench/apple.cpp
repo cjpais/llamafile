@@ -45,8 +45,6 @@ void init_apple_mon() {
 
     bool ok = true;
 
-    printf("LOADING IOREPORT\n");
-
     ok &= !!(io_report.IOReportCopyChannelsInGroup = (CFDictionaryRef (*)(CFStringRef, CFStringRef, uint64_t, uint64_t, uint64_t))imp(lib, "IOReportCopyChannelsInGroup"));
     ok &= !!(io_report.IOReportCreateSubscription = (IOReportSubscriptionRef (*)(CVoidRef, CFMutableDictionaryRef, CFMutableDictionaryRef*, uint64_t, CFTypeRef))imp(lib, "IOReportCreateSubscription"));
     ok &= !!(io_report.IOReportCreateSamples = (CFDictionaryRef (*)(IOReportSubscriptionRef, CFMutableDictionaryRef, CFTypeRef))imp(lib, "IOReportCreateSamples"));
@@ -60,9 +58,6 @@ void init_apple_mon() {
         cosmo_dlclose(lib);
         return;
     }
-
-    printf("IOReport initialized successfully\n");
-    printf("LOADING COREFOUNDATION\n");
 
     ok &= !!(core_foundation.CFDictionaryCreateMutableCopy = (CFMutableDictionaryRef (*)(void*, long, CFDictionaryRef))imp(lib, "CFDictionaryCreateMutableCopy"));
     ok &= !!(core_foundation.CFDictionaryGetCount = (long (*)(CFDictionaryRef))imp(lib, "CFDictionaryGetCount"));
@@ -81,7 +76,6 @@ void init_apple_mon() {
         return;
     }
 
-    printf("CoreFoundation initialized successfully\n");
 }
 
 static bool get_cstring_from_cfstring(CFStringRef cfString, char* buffer, size_t bufferSize) {
