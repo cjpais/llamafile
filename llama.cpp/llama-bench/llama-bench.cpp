@@ -1908,6 +1908,8 @@ int main(int argc, char ** argv) {
         {16, 1536}      // 1:96 QA, Storytelling
     };
 
+    LoadZipArgs(&argc, &argv);
+
     // try to set locale for unicode characters in markdown
     setlocale(LC_CTYPE, "C.UTF-8");  // [jart]
 
