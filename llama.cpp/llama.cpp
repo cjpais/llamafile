@@ -5682,6 +5682,9 @@ static bool llm_load_tensors(
 
     auto & hparams = model.hparams;
 
+    // n_gpu_layers = std::min(n_gpu_layers, (int)hparams.n_layer); // [jart]
+    n_gpu_layers = std::max(n_gpu_layers, 0); // [jart]
+
     model.split_mode   = split_mode;
     model.main_gpu     = main_gpu;
     model.n_gpu_layers = n_gpu_layers;
@@ -14772,7 +14775,7 @@ static int llama_decode_internal(
             lctx.n_outputs = n_outputs_new;
         }
 
-        int n_threads = n_tokens == 1 ? cparams.n_threads : cparams.n_threads_batch;
+        int n_threads = n_tokens <= 2 ? cparams.n_threads : cparams.n_threads_batch; // [jart]
         GGML_ASSERT(n_threads > 0);
 
         // helpers for smoother batch API transition
@@ -15023,7 +15026,7 @@ static int llama_encode_internal(
     lctx.inp_embd_enc = NULL;
     lctx.n_outputs = n_tokens;
 
-    int n_threads = n_tokens == 1 ? cparams.n_threads : cparams.n_threads_batch;
+    int n_threads = n_tokens <= 2 ? cparams.n_threads : cparams.n_threads_batch; // [jart]
     GGML_ASSERT(n_threads > 0);
 
     // helpers for smoother batch API transition
@@ -15080,14 +15083,6 @@ static int llama_encode_internal(
     ggml_backend_sched_alloc_graph(lctx.sched, gf);
 
     llama_set_inputs(lctx, batch);
-
-    // [jart] On CPUs with many cores (e.g. EPYC, Threadripper)
-    //        using more than twenty threads for token prediction
-    //        never helps. This number appears to be optimal for all
-    //        models ranging from TinyLLaMA 1.1B to mighty Mixtral 8x22B.
-    if (n_tokens <= 2) {
-        n_threads = std::min(20, n_threads);
-    }
 
     llama_graph_compute(lctx, gf, n_threads);
 
@@ -17257,6 +17252,10 @@ int32_t llama_n_layer(const struct llama_model * model) {
     return model->hparams.n_layer;
 }
 
+int32_t llama_n_gpu_layers(const struct llama_model * model) { // [jart]
+    return model->n_gpu_layers;
+}
+
 float llama_rope_freq_scale_train(const struct llama_model * model) {
     return model->hparams.rope_freq_scale_train;
 }
@@ -19012,21 +19011,15 @@ static int32_t llama_chat_apply_template_internal(
         }
     } else if (tmpl == "gemma" || tmpl == "gemma2" || tmpl_contains("<start_of_turn>")) {
         // google/gemma-7b-it
-        std::string system_prompt = "";
         for (auto message : chat) {
+            // [jart] use two user prompts rather than merging system message
             std::string role(message->role);
-            if (role == "system") {
-                // there is no system message for gemma, but we will merge it with user prompt, so nothing is broken
-                system_prompt = trim(message->content);
-                continue;
+            if (role == "model" || role == "assistant") {
+                role = "model";
+            } else {
+                role = "user";
             }
-            // in gemma, "assistant" is "model"
-            role = role == "assistant" ? "model" : message->role;
             ss << "<start_of_turn>" << role << "\n";
-            if (!system_prompt.empty() && role != "model") {
-                ss << system_prompt << "\n\n";
-                system_prompt = "";
-            }
             ss << trim(message->content) << "<end_of_turn>\n";
         }
         if (add_ass) {

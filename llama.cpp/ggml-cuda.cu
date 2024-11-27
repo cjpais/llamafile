@@ -1,6 +1,8 @@
 // -*- mode:c++;indent-tabs-mode:nil;c-basic-offset:4;coding:utf-8 -*-
 // vi: set et ft=cpp ts=4 sts=4 sw=4 fenc=utf-8 :vi
 
+// #define ONLY_Q6_K
+
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -354,8 +356,22 @@ void ggml_abort(const char * file, int line, const char * fmt, ...) {
 
 GGML_CALL bool ggml_cuda_link(const struct ggml_backend_api *backend_api) {
     g_backend = backend_api;
-    if (!FLAG_log_disable)
+
+    if (!FLAG_log_disable) {
+        int kernelVersion = 0;
+        cudaDriverGetVersion(&kernelVersion);
+        fprintf(stderr, "%s: CUDA kernel version %d.%d\n", __func__,
+                kernelVersion / 1000, (kernelVersion % 1000) / 10);
+
+        int runtimeVersion = 0;
+        cudaRuntimeGetVersion(&runtimeVersion);
+        fprintf(stderr, "%s: CUDA runtime version is %d.%d%s\n", __func__,
+                runtimeVersion / 1000, (runtimeVersion % 1000) / 10,
+                runtimeVersion > kernelVersion ? " (!!!)" : "");
+
         fprintf(stderr, "%s: welcome to " GGML_CUDA_NAME " SDK with " BLAS_NAME "\n", __func__);
+    }
+
 #ifdef __HIP_PLATFORM_AMD__
     // cargo culting workaround below
 #ifndef GGML_USE_TINYBLAS
@@ -806,6 +822,7 @@ struct ggml_cuda_type_traits<GGML_TYPE_BF16> {
     static constexpr int qr = 1;
 };
 
+#ifndef ONLY_Q6_K
 template<>
 struct ggml_cuda_type_traits<GGML_TYPE_Q4_0> {
     static constexpr int qk = QK4_0;
@@ -868,6 +885,7 @@ struct ggml_cuda_type_traits<GGML_TYPE_Q5_K> {
     static constexpr int qr = QR5_K;
     static constexpr int qi = QI5_K;
 };
+#endif // ONLY_Q6_K
 
 template<>
 struct ggml_cuda_type_traits<GGML_TYPE_Q6_K> {
@@ -876,6 +894,7 @@ struct ggml_cuda_type_traits<GGML_TYPE_Q6_K> {
     static constexpr int qi = QI6_K;
 };
 
+#ifndef GGML_MINIMIZE_CODE_SIZE
 template<>
 struct ggml_cuda_type_traits<GGML_TYPE_IQ2_XXS> {
     static constexpr int qk = QK_K;
@@ -938,6 +957,7 @@ struct ggml_cuda_type_traits<GGML_TYPE_IQ3_S> {
     static constexpr int qr = QR3_S;
     static constexpr int qi = QI3_S;
 };
+#endif
 
 //////////////////////
 
@@ -2509,6 +2529,7 @@ static void dequantize_block_cuda(const void * __restrict__ vx, dst_t * __restri
     dequantize_block<qk, qr, dequantize_kernel><<<num_blocks, CUDA_DEQUANTIZE_BLOCK_SIZE, 0, stream>>>(vx, y, k);
 }
 
+#ifndef ONLY_Q6_K
 static void dequantize_block_q8_0_f16_cuda(const void * __restrict__ vx, half * __restrict__ y, const int64_t k, cudaStream_t stream) {
     const int num_blocks = (k + CUDA_Q8_0_NE_ALIGN - 1) / CUDA_Q8_0_NE_ALIGN;
     if (k % CUDA_Q8_0_NE_ALIGN == 0) {
@@ -2557,6 +2578,7 @@ static void dequantize_row_q5_K_cuda(const void * vx, dst_t * y, const int64_t k
     const int nb = k / QK_K;
     dequantize_block_q5_K<<<nb, 64, 0, stream>>>(vx, y);
 }
+#endif // ONLY_Q6_K
 
 template<typename dst_t>
 static void dequantize_row_q6_K_cuda(const void * vx, dst_t * y, const int64_t k, cudaStream_t stream) {
@@ -2564,6 +2586,7 @@ static void dequantize_row_q6_K_cuda(const void * vx, dst_t * y, const int64_t k
     dequantize_block_q6_K<<<nb, 64, 0, stream>>>(vx, y);
 }
 
+#ifndef GGML_MINIMIZE_CODE_SIZE
 template<typename dst_t>
 static void dequantize_row_iq2_xxs_cuda(const void * vx, dst_t * y, const int64_t k, cudaStream_t stream) {
     const int nb = k / QK_K;
@@ -2617,6 +2640,7 @@ static void dequantize_row_iq4_xs_cuda(const void * vx, dst_t * y, const int64_t
     const int nb = (k + QK_K - 1) / QK_K;
     dequantize_block_iq4_xs<<<nb, 32, 0, stream>>>(vx, y);
 }
+#endif
 
 template <typename src_t, typename dst_t>
 static __global__ void convert_unary(const void * __restrict__ vx, dst_t * __restrict__ y, const int64_t k) {
@@ -2639,6 +2663,7 @@ static void convert_unary_cuda(const void * __restrict__ vx, dst_t * __restrict_
 
 to_fp16_cuda_t ggml_get_to_fp16_cuda(ggml_type type) {
     switch (type) {
+#ifndef ONLY_Q6_K
         case GGML_TYPE_Q4_0:
             return dequantize_row_q4_0_cuda;
         case GGML_TYPE_Q4_1:
@@ -2660,8 +2685,10 @@ to_fp16_cuda_t ggml_get_to_fp16_cuda(ggml_type type) {
             return dequantize_row_q4_K_cuda;
         case GGML_TYPE_Q5_K:
             return dequantize_row_q5_K_cuda;
+#endif
         case GGML_TYPE_Q6_K:
             return dequantize_row_q6_K_cuda;
+#ifndef GGML_MINIMIZE_CODE_SIZE
         case GGML_TYPE_IQ2_XXS:
             return dequantize_row_iq2_xxs_cuda;
         case GGML_TYPE_IQ2_XS:
@@ -2680,6 +2707,7 @@ to_fp16_cuda_t ggml_get_to_fp16_cuda(ggml_type type) {
             return dequantize_row_iq4_xs_cuda;
         case GGML_TYPE_IQ3_S:
             return dequantize_row_iq3_s_cuda;
+#endif
         case GGML_TYPE_F32:
             return convert_unary_cuda<float>;
         default:
@@ -2689,6 +2717,7 @@ to_fp16_cuda_t ggml_get_to_fp16_cuda(ggml_type type) {
 
 to_fp32_cuda_t ggml_get_to_fp32_cuda(ggml_type type) {
     switch (type) {
+#ifndef ONLY_Q6_K
         case GGML_TYPE_Q4_0:
             return dequantize_row_q4_0_cuda;
         case GGML_TYPE_Q4_1:
@@ -2707,8 +2736,10 @@ to_fp32_cuda_t ggml_get_to_fp32_cuda(ggml_type type) {
             return dequantize_row_q4_K_cuda;
         case GGML_TYPE_Q5_K:
             return dequantize_row_q5_K_cuda;
+#endif
         case GGML_TYPE_Q6_K:
             return dequantize_row_q6_K_cuda;
+#ifndef GGML_MINIMIZE_CODE_SIZE
         case GGML_TYPE_IQ2_XXS:
             return dequantize_row_iq2_xxs_cuda;
         case GGML_TYPE_IQ2_XS:
@@ -2727,6 +2758,7 @@ to_fp32_cuda_t ggml_get_to_fp32_cuda(ggml_type type) {
             return dequantize_row_iq4_xs_cuda;
         case GGML_TYPE_IQ3_S:
             return dequantize_row_iq3_s_cuda;
+#endif
         case GGML_TYPE_F16:
             return convert_unary_cuda<half>;
         case GGML_TYPE_BF16:
@@ -2942,6 +2974,7 @@ static __global__ void cpy_f32_f16(const char * cx, char * cdst, const int ne,
     cpy_1(cx + x_offset, cdst + dst_offset);
 }
 
+#ifndef ONLY_Q6_K
 static __device__ void cpy_blck_f32_q8_0(const char * cxi, char * cdsti) {
     const float * xi = (const float *) cxi;
     block_q8_0 * dsti = (block_q8_0 *) cdsti;
@@ -3097,7 +3130,7 @@ static __device__ void cpy_blck_f32_q5_1(const char * cxi, char * cdsti) {
     }
     memcpy(dsti->qh, &qh, sizeof(qh));
 }
-
+#endif // ONLY_Q6_K
 
 static __device__ __forceinline__ int best_index_int8(int n, const int8_t * val, float x) {
     if (x <= val[0]) return 0;
@@ -3110,6 +3143,7 @@ static __device__ __forceinline__ int best_index_int8(int n, const int8_t * val,
     return x - val[mu-1] < val[mu] - x ? mu-1 : mu;
 }
 
+#ifndef GGML_MINIMIZE_CODE_SIZE
 static __device__ void cpy_blck_f32_iq4_nl(const char * cxi, char * cdsti) {
     const float * xi = (const float *) cxi;
     block_iq4_nl * dsti = (block_iq4_nl *) cdsti;
@@ -3145,6 +3179,7 @@ static __device__ void cpy_blck_f32_iq4_nl(const char * cxi, char * cdsti) {
 
     dsti->d = sumq2 > 0 ? sumqx/sumq2 : d;
 }
+#endif
 
 template <cpy_kernel_t cpy_blck, int qk>
 static __global__ void cpy_f32_q(const char * cx, char * cdst, const int ne,
@@ -3222,6 +3257,7 @@ static void ggml_cpy_f32_bf16_cuda( // [jart]
         (cx, cdst, ne, ne00, ne01, ne02, nb00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb13);
 }
 
+#ifndef ONLY_Q6_K
 static void ggml_cpy_f32_q8_0_cuda(
     const char * cx, char * cdst, const int ne,
     const int ne00, const int ne01, const int ne02, const int nb00, const int nb01, const int nb02,
@@ -3276,7 +3312,9 @@ static void ggml_cpy_f32_q5_1_cuda(
     cpy_f32_q<cpy_blck_f32_q5_1, QK5_1><<<num_blocks, 1, 0, stream>>>
         (cx, cdst, ne, ne00, ne01, ne02, nb00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb13);
 }
+#endif // ONLY_Q6_K
 
+#ifndef GGML_MINIMIZE_CODE_SIZE
 static void ggml_cpy_f32_iq4_nl_cuda(
     const char * cx, char * cdst, const int ne,
     const int ne00, const int ne01, const int ne02, const int nb00, const int nb01, const int nb02,
@@ -3287,6 +3325,7 @@ static void ggml_cpy_f32_iq4_nl_cuda(
     cpy_f32_q<cpy_blck_f32_iq4_nl, QK4_NL><<<num_blocks, 1, 0, stream>>>
         (cx, cdst, ne, ne00, ne01, ne02, nb00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb13);
 }
+#endif
 
 static void ggml_cpy_f16_f16_cuda(
     const char * cx, char * cdst, const int ne,
@@ -3346,6 +3385,7 @@ void ggml_cuda_cpy(ggml_backend_cuda_context & ctx, const ggml_tensor * src0, gg
         ggml_cpy_f32_f32_cuda (src0_ddc, src1_ddc, ne, ne00, ne01, ne02, nb00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb13, main_stream);
     } else if (src0->type == GGML_TYPE_F32 && src1->type == GGML_TYPE_F16) {
         ggml_cpy_f32_f16_cuda (src0_ddc, src1_ddc, ne, ne00, ne01, ne02, nb00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb13, main_stream);
+#ifndef ONLY_Q6_K
     } else if (src0->type == GGML_TYPE_F32 && src1->type == GGML_TYPE_Q8_0) {
         ggml_cpy_f32_q8_0_cuda(src0_ddc, src1_ddc, ne, ne00, ne01, ne02, nb00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb13, main_stream);
     } else if (src0->type == GGML_TYPE_F32 && src1->type == GGML_TYPE_Q4_0) {
@@ -3354,10 +3394,15 @@ void ggml_cuda_cpy(ggml_backend_cuda_context & ctx, const ggml_tensor * src0, gg
         ggml_cpy_f32_q4_1_cuda(src0_ddc, src1_ddc, ne, ne00, ne01, ne02, nb00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb13, main_stream);
     } else if (src0->type == GGML_TYPE_F32 && src1->type == GGML_TYPE_Q5_0) {
         ggml_cpy_f32_q5_0_cuda(src0_ddc, src1_ddc, ne, ne00, ne01, ne02, nb00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb13, main_stream);
+#endif
+#ifndef GGML_MINIMIZE_CODE_SIZE
     } else if (src0->type == GGML_TYPE_F32 && src1->type == GGML_TYPE_IQ4_NL) {
         ggml_cpy_f32_iq4_nl_cuda(src0_ddc, src1_ddc, ne, ne00, ne01, ne02, nb00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb13, main_stream);
+#endif
+#ifndef ONLY_Q6_K
     } else if (src0->type == GGML_TYPE_F32 && src1->type == GGML_TYPE_Q5_1) {
         ggml_cpy_f32_q5_1_cuda(src0_ddc, src1_ddc, ne, ne00, ne01, ne02, nb00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb13, main_stream);
+#endif
     } else if (src0->type == GGML_TYPE_F16 && src1->type == GGML_TYPE_F16) {
         ggml_cpy_f16_f16_cuda (src0_ddc, src1_ddc, ne, ne00, ne01, ne02, nb00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb13, main_stream);
     } else if (src0->type == GGML_TYPE_F16 && src1->type == GGML_TYPE_F32) {
@@ -3385,6 +3430,7 @@ void* ggml_cuda_cpy_fn(const ggml_tensor * src0, ggml_tensor * src1) {
             return (void*) cpy_f32_f16<cpy_1_f32_f32>;
     } else if (src0->type == GGML_TYPE_F32 && src1->type == GGML_TYPE_F16) {
             return (void*) cpy_f32_f16<cpy_1_f32_f16>;
+#ifndef ONLY_Q6_K
     } else if (src0->type == GGML_TYPE_F32 && src1->type == GGML_TYPE_Q8_0) {
             return (void*) cpy_f32_q<cpy_blck_f32_q8_0, QK8_0>;
     } else if (src0->type == GGML_TYPE_F32 && src1->type == GGML_TYPE_Q4_0) {
@@ -3393,10 +3439,15 @@ void* ggml_cuda_cpy_fn(const ggml_tensor * src0, ggml_tensor * src1) {
             return (void*) cpy_f32_q<cpy_blck_f32_q4_1, QK4_1>;
     } else if (src0->type == GGML_TYPE_F32 && src1->type == GGML_TYPE_Q5_0) {
             return (void*) cpy_f32_q<cpy_blck_f32_q5_0, QK5_0>;
+#endif
+#ifndef GGML_MINIMIZE_CODE_SIZE
     } else if (src0->type == GGML_TYPE_F32 && src1->type == GGML_TYPE_IQ4_NL) {
             return (void*) cpy_f32_q<cpy_blck_f32_iq4_nl, QK4_NL>;
+#endif
+#ifndef ONLY_Q6_K
     } else if (src0->type == GGML_TYPE_F32 && src1->type == GGML_TYPE_Q5_1) {
             return (void*) cpy_f32_q<cpy_blck_f32_q5_1, QK5_1>;
+#endif
     } else if (src0->type == GGML_TYPE_F16 && src1->type == GGML_TYPE_F16) {
             return (void*) cpy_f32_f16<cpy_1_f32_f16>;
     } else if (src0->type == GGML_TYPE_F16 && src1->type == GGML_TYPE_F32) {
@@ -3508,6 +3559,7 @@ void ggml_cuda_op_dequantize_mul_mat_vec(
 static_assert(K_QUANTS_PER_ITERATION == 1 || K_QUANTS_PER_ITERATION == 2, "K_QUANTS_PER_ITERATION must be 1 or 2");
 #endif
 
+#ifndef ONLY_Q6_K
 static __global__ void dequantize_mul_mat_vec_q2_k(const void * __restrict__ vx, const float * __restrict__ yy, float * __restrict__ dst, const int ncols, int nrows) {
 
     static_assert(16%K_QUANTS_PER_ITERATION == 0, "16 must be divisible by K_QUANTS_PER_ITERATION");
@@ -3839,6 +3891,7 @@ static __global__ void dequantize_mul_mat_vec_q5_k(const void * __restrict__ vx,
         dst[row] = tmp;
     }
 }
+#endif // ONLY_Q6_K
 
 static __global__ void dequantize_mul_mat_vec_q6_k(const void * __restrict__ vx, const float * __restrict__ yy, float * __restrict__ dst, const int ncols, int nrows) {
 
@@ -4008,6 +4061,7 @@ static __global__ void dequantize_mul_mat_vec(const void * __restrict__ vx, cons
     }
 }
 
+#ifndef ONLY_Q6_K
 static void dequantize_mul_mat_vec_q4_0_cuda(const void * vx, const dfloat * y, float * dst, const int ncols, const int nrows, cudaStream_t stream) {
     GGML_ASSERT(ncols % GGML_CUDA_DMMV_X == 0);
     const int block_num_y = (nrows + GGML_CUDA_MMV_Y - 1) / GGML_CUDA_MMV_Y;
@@ -4086,6 +4140,7 @@ static void dequantize_mul_mat_vec_q5_K_cuda(const void * vx, const float * y, f
     const dim3 block_dims(32, 1, 1);
     dequantize_mul_mat_vec_q5_k<<<nrows, block_dims, 0, stream>>>(vx, y, dst, ncols);
 }
+#endif // ONLY_Q6_K
 
 static void dequantize_mul_mat_vec_q6_K_cuda(const void * vx, const float * y, float * dst, const int ncols, const int nrows, cudaStream_t stream) {
     GGML_ASSERT(ncols % QK_K == 0);
@@ -4147,6 +4202,7 @@ void ggml_cuda_op_dequantize_mul_mat_vec(
 #endif // GGML_CUDA_F16
 
     switch (src0->type) {
+#ifndef ONLY_Q6_K
         case GGML_TYPE_Q4_0:
             dequantize_mul_mat_vec_q4_0_cuda(src0_dd_i, src1_dfloat, dst_dd_i, ne00, row_diff, stream);
             break;
@@ -4174,6 +4230,7 @@ void ggml_cuda_op_dequantize_mul_mat_vec(
         case GGML_TYPE_Q5_K:
             dequantize_mul_mat_vec_q5_K_cuda(src0_dd_i, src1_ddf_i, dst_dd_i, ne00, row_diff, stream);
             break;
+#endif
         case GGML_TYPE_Q6_K:
             dequantize_mul_mat_vec_q6_K_cuda(src0_dd_i, src1_ddf_i, dst_dd_i, ne00, row_diff, stream);
             break;
@@ -4236,6 +4293,7 @@ static __device__ __forceinline__ int get_int_b4(const void * x, const int & i32
 #define VDR_Q4_0_Q8_1_MMVQ 2
 #define VDR_Q4_0_Q8_1_MMQ  4
 
+#ifndef ONLY_Q6_K
 template <int vdr> static __device__ __forceinline__ float vec_dot_q4_0_q8_1_impl(
     const int * v, const int * u, const float & d4, const half2 & ds8) {
 
@@ -4377,6 +4435,7 @@ template <typename T, int vdr> static __device__ __forceinline__ T vec_dot_q8_0_
 
     return d8_0*d8_1 * ((T) sumi);
 }
+#endif // ONLY_Q6_K
 
 template <int vdr> static __device__ __forceinline__ float vec_dot_q8_1_q8_1_impl(
     const int * v, const int * u, const half2 & dm8, const half2 & ds8) {
@@ -4404,6 +4463,7 @@ template <int vdr> static __device__ __forceinline__ float vec_dot_q8_1_q8_1_imp
     return sumi*d8d8 + m8s8 / (QI8_1 / vdr);
 }
 
+#ifndef ONLY_Q6_K
 template <int vdr> static __device__ __forceinline__ float vec_dot_q8_0_16_q8_1_impl(
     const int * v, const int * u, const float * d8_0, const float & d8_1) {
 
@@ -4684,6 +4744,7 @@ static __device__ __forceinline__ float vec_dot_q5_K_q8_1_impl_mmq(
 
     return dm4f.x*sumf_d - dm4f.y*sumf_m;
 }
+#endif // ONLY_Q6_K
 
 #define VDR_Q6_K_Q8_1_MMVQ 1
 #define VDR_Q6_K_Q8_1_MMQ  8
@@ -4740,6 +4801,7 @@ static __device__ __forceinline__ float vec_dot_q6_K_q8_1_impl_mmq(
     return d6 * sumf_d;
 }
 
+#ifndef ONLY_Q6_K
 static __device__ __forceinline__ float vec_dot_q4_0_q8_1(
     const void * __restrict__ vbq, const block_q8_1 * __restrict__ bq8_1, const int & kbx, const int & iqs) {
 
@@ -4975,6 +5037,7 @@ static __device__ __forceinline__ float vec_dot_q5_K_q8_1(
 
     return vec_dot_q5_K_q8_1_impl_vmmq(vl, vh, u, sc, m, bq5_K->dm, d8);
 }
+#endif // ONLY_Q6_K
 
 static __device__ __forceinline__ float vec_dot_q6_K_q8_1(
     const void * __restrict__ vbq, const block_q8_1 * __restrict__ bq8_1, const int & kbx, const int & iqs) {
@@ -5348,6 +5411,7 @@ static __device__ __forceinline__ float vec_dot_iq4_xs_q8_1(
     return d * sumi;
 }
 
+#ifndef GGML_MINIMIZE_CODE_SIZE
 
 #define FATTN_KQ_STRIDE       256
 #define HALF_MAX_HALF         __float2half(65504.0f/2) // Use neg. of this instead of -INFINITY to initialize KQ max vals to avoid NaN upon subtraction.
@@ -6042,8 +6106,6 @@ void launch_fattn(
         (dst_tmp.ptr, dst_tmp_meta.ptr, (float *) KQV->data);
     CUDA_CHECK(cudaGetLastError());
 }
-
-#ifndef GGML_MINIMIZE_CODE_SIZE
 
 ////////////////////////////////////////////////////////////////////////////////
 //
@@ -7345,7 +7407,6 @@ extern DECL_FATTN_WMMA_F16_CASE(256, 16, half);
 //
 ////////////////////////////////////////////////////////////////////////////////
 
-
 void ggml_cuda_flash_attn_ext(ggml_backend_cuda_context & ctx, ggml_tensor * dst);
 
 
@@ -8499,6 +8560,7 @@ void ggml_cuda_op_get_rows(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
         case GGML_TYPE_F32:
             get_rows_cuda_float(src0, src1, dst, src0_d, src1_i32, dst_d, stream);
             break;
+#ifndef ONLY_Q6_K
         case GGML_TYPE_Q4_0:
             get_rows_cuda<QK4_0, QR4_0, dequantize_q4_0>(src0, src1, dst, src0_d, src1_i32, dst_d, stream);
             break;
@@ -8514,6 +8576,7 @@ void ggml_cuda_op_get_rows(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
         case GGML_TYPE_Q8_0:
             get_rows_cuda<QK8_0, QR8_0, dequantize_q8_0>(src0, src1, dst, src0_d, src1_i32, dst_d, stream);
             break;
+#endif // ONLY_Q6_K
         default:
             // TODO: k-quants
             GGML_ABORT("%s: unsupported type: %s\n", __func__, ggml_type_name(src0->type));
@@ -8924,6 +8987,7 @@ static_assert(sizeof(block_q8_1_mmq) == 4*sizeof(block_q8_1),      "Unexpected b
 
 static mmq_q8_1_ds_layout mmq_get_q8_1_ds_layout(const ggml_type type_x) {
     switch (type_x) {
+#ifndef ONLY_Q6_K
         case GGML_TYPE_Q4_0:
         case GGML_TYPE_Q4_1:
             return MMQ_Q8_1_DS_LAYOUT_DS4;
@@ -8940,7 +9004,10 @@ static mmq_q8_1_ds_layout mmq_get_q8_1_ds_layout(const ggml_type type_x) {
         case GGML_TYPE_Q4_K:
         case GGML_TYPE_Q5_K:
             return MMQ_Q8_1_DS_LAYOUT_DS4;
+#endif
         case GGML_TYPE_Q6_K:
+            return MMQ_Q8_1_DS_LAYOUT_D4;
+#ifndef GGML_MINIMIZE_CODE_SIZE
         case GGML_TYPE_IQ2_XXS:
         case GGML_TYPE_IQ2_XS:
         case GGML_TYPE_IQ2_S:
@@ -8952,6 +9019,7 @@ static mmq_q8_1_ds_layout mmq_get_q8_1_ds_layout(const ggml_type type_x) {
         case GGML_TYPE_IQ4_XS:
         case GGML_TYPE_IQ4_NL:
             return MMQ_Q8_1_DS_LAYOUT_D4;
+#endif
         default:
             GGML_ABORT("fatal error");
             break;
@@ -9029,7 +9097,9 @@ static constexpr __device__ int get_mmq_y_device() {
 #define MMQ_DP4A_TXS_Q6_K    tile_x_sizes{mmq_y*WARP_SIZE*2 + mmq_y, mmq_y*WARP_SIZE/QI6_K   + mmq_y/QI6_K,     mmq_y*WARP_SIZE/8 + mmq_y/8}
 
 static constexpr __host__ __device__ tile_x_sizes mmq_get_dp4a_tile_x_sizes(ggml_type type, int mmq_y) {
-    return type == GGML_TYPE_Q4_0 ? MMQ_DP4A_TXS_Q4_0 :
+    return
+#ifndef ONLY_Q6_K
+        type == GGML_TYPE_Q4_0    ? MMQ_DP4A_TXS_Q4_0 :
         type == GGML_TYPE_Q4_1    ? MMQ_DP4A_TXS_Q4_1 :
         type == GGML_TYPE_Q5_0    ? MMQ_DP4A_TXS_Q8_0 :
         type == GGML_TYPE_Q5_1    ? MMQ_DP4A_TXS_Q8_1 :
@@ -9038,7 +9108,9 @@ static constexpr __host__ __device__ tile_x_sizes mmq_get_dp4a_tile_x_sizes(ggml
         type == GGML_TYPE_Q3_K    ? MMQ_DP4A_TXS_Q3_K :
         type == GGML_TYPE_Q4_K    ? MMQ_DP4A_TXS_Q4_K :
         type == GGML_TYPE_Q5_K    ? MMQ_DP4A_TXS_Q5_K :
+#endif
         type == GGML_TYPE_Q6_K    ? MMQ_DP4A_TXS_Q6_K :
+#ifndef GGML_MINIMIZE_CODE_SIZE
         type == GGML_TYPE_IQ2_XXS ? MMQ_DP4A_TXS_Q8_0 :
         type == GGML_TYPE_IQ2_XS  ? MMQ_DP4A_TXS_Q8_0_16 :
         type == GGML_TYPE_IQ2_S   ? MMQ_DP4A_TXS_Q8_0_16 :
@@ -9047,6 +9119,7 @@ static constexpr __host__ __device__ tile_x_sizes mmq_get_dp4a_tile_x_sizes(ggml
         type == GGML_TYPE_IQ1_S   ? MMQ_DP4A_TXS_Q8_0 :
         type == GGML_TYPE_IQ4_XS  ? MMQ_DP4A_TXS_Q8_0 :
         type == GGML_TYPE_IQ4_NL  ? MMQ_DP4A_TXS_Q8_0 :
+#endif
         tile_x_sizes{0, 0, 0};
 }
 
@@ -9063,7 +9136,9 @@ static_assert(MMQ_MMA_TILE_X_K_Q3_K % 8 == 4, "Wrong padding.");
 static_assert(MMQ_MMA_TILE_X_K_Q6_K % 8 == 4, "Wrong padding.");
 
 static constexpr __host__ __device__ int mmq_get_mma_tile_x_k(ggml_type type) {
-    return type == GGML_TYPE_Q4_0 ? MMQ_MMA_TILE_X_K_Q8_0 :
+    return
+#ifndef ONLY_Q6_K
+        type == GGML_TYPE_Q4_0    ? MMQ_MMA_TILE_X_K_Q8_0 :
         type == GGML_TYPE_Q4_1    ? MMQ_MMA_TILE_X_K_Q8_1 :
         type == GGML_TYPE_Q5_0    ? MMQ_MMA_TILE_X_K_Q8_0 :
         type == GGML_TYPE_Q5_1    ? MMQ_MMA_TILE_X_K_Q8_1 :
@@ -9072,7 +9147,9 @@ static constexpr __host__ __device__ int mmq_get_mma_tile_x_k(ggml_type type) {
         type == GGML_TYPE_Q3_K    ? MMQ_MMA_TILE_X_K_Q3_K :
         type == GGML_TYPE_Q4_K    ? MMQ_MMA_TILE_X_K_Q8_1 :
         type == GGML_TYPE_Q5_K    ? MMQ_MMA_TILE_X_K_Q8_1 :
+#endif
         type == GGML_TYPE_Q6_K    ? MMQ_MMA_TILE_X_K_Q6_K :
+#ifndef GGML_MINIMIZE_CODE_SIZE
         type == GGML_TYPE_IQ2_XXS ? MMQ_MMA_TILE_X_K_Q8_0 :
         type == GGML_TYPE_IQ2_XS  ? MMQ_MMA_TILE_X_K_Q3_K :
         type == GGML_TYPE_IQ2_S   ? MMQ_MMA_TILE_X_K_Q3_K :
@@ -9081,6 +9158,7 @@ static constexpr __host__ __device__ int mmq_get_mma_tile_x_k(ggml_type type) {
         type == GGML_TYPE_IQ1_S   ? MMQ_MMA_TILE_X_K_Q8_0 :
         type == GGML_TYPE_IQ4_XS  ? MMQ_MMA_TILE_X_K_Q8_0 :
         type == GGML_TYPE_IQ4_NL  ? MMQ_MMA_TILE_X_K_Q8_0 :
+#endif
         0;
 }
 
@@ -9157,6 +9235,7 @@ template <int mmq_y, int nwarps, bool need_check> static __device__ __forceinlin
     }
 }
 
+#ifndef ONLY_Q6_K
 template <int mmq_x, int mmq_y, int nwarps>
 static __device__ __forceinline__ void vec_dot_q4_0_q8_1_dp4a(
     const int * __restrict__ x, const int * __restrict__ y, float * __restrict__ sum, const int & k00) {
@@ -9629,6 +9708,7 @@ static __device__ __forceinline__ void vec_dot_q8_1_q8_1_dp4a(
         }
     }
 }
+#endif // ONLY_Q6_K
 
 template <int mmq_x, int mmq_y, int nwarps>
 static __device__ __forceinline__ void vec_dot_q8_1_q8_1_mma(
@@ -9707,6 +9787,7 @@ static __device__ __forceinline__ void vec_dot_q8_1_q8_1_mma(
     }
 }
 
+#ifndef ONLY_Q6_K
 template <int mmq_x, int mmq_y, int nwarps>
 static __device__ __forceinline__ void vec_dot_q8_0_16_q8_1_dp4a(
     const int * __restrict__ x, const int * __restrict__ y, float * __restrict__ sum, const int & k00) {
@@ -10461,6 +10542,7 @@ static __device__ __forceinline__ void vec_dot_q5_K_q8_1_dp4a(
         }
     }
 }
+#endif // ONLY_Q6_K
 
 template <int mmq_y, int nwarps, bool need_check> static __device__ __forceinline__ void load_tiles_q6_K(
     const char * __restrict__ x, int * __restrict__ x_tile, const int & kbx0, const int & i_max, const int & stride) {
@@ -11225,6 +11307,7 @@ static __device__ __forceinline__ void mmq_write_back_mma(
 template <int mmq_x, int mmq_y, int nwarps, bool need_check, ggml_type type>
 struct mmq_type_traits;
 
+#ifndef ONLY_Q6_K
 template <int mmq_x, int mmq_y, int nwarps, bool need_check>
 struct mmq_type_traits<mmq_x, mmq_y, nwarps, need_check, GGML_TYPE_Q4_0> {
     static constexpr int              vdr          = VDR_Q4_0_Q8_1_MMQ;
@@ -11296,6 +11379,7 @@ struct mmq_type_traits<mmq_x, mmq_y, nwarps, need_check, GGML_TYPE_Q5_K> {
     static constexpr vec_dot_mmq_t    vec_dot_mma  = vec_dot_q8_1_q8_1_mma<mmq_x, mmq_y, nwarps>;
     static constexpr vec_dot_mmq_t    vec_dot_dp4a = vec_dot_q5_K_q8_1_dp4a<mmq_x, mmq_y, nwarps>;
 };
+#endif
 
 template <int mmq_x, int mmq_y, int nwarps, bool need_check>
 struct mmq_type_traits<mmq_x, mmq_y, nwarps, need_check, GGML_TYPE_Q6_K> {
@@ -11305,6 +11389,7 @@ struct mmq_type_traits<mmq_x, mmq_y, nwarps, need_check, GGML_TYPE_Q6_K> {
     static constexpr vec_dot_mmq_t    vec_dot_dp4a = vec_dot_q6_K_q8_1_dp4a<mmq_x, mmq_y, nwarps>;
 };
 
+#ifndef GGML_MINIMIZE_CODE_SIZE
 template <int mmq_x, int mmq_y, int nwarps, bool need_check>
 struct mmq_type_traits<mmq_x, mmq_y, nwarps, need_check, GGML_TYPE_IQ2_XXS> {
     static constexpr int              vdr          = VDR_IQ2_XXS_Q8_1_MMQ;
@@ -11368,6 +11453,7 @@ struct mmq_type_traits<mmq_x, mmq_y, nwarps, need_check, GGML_TYPE_IQ4_XS> {
     static constexpr vec_dot_mmq_t    vec_dot_mma  = vec_dot_q8_0_q8_1_mma<mmq_x, mmq_y, nwarps, MMQ_Q8_1_DS_LAYOUT_D4>;
     static constexpr vec_dot_mmq_t    vec_dot_dp4a = vec_dot_q8_0_q8_1_dp4a<mmq_x, mmq_y, nwarps>;
 };
+#endif
 
 template <ggml_type type, int mmq_x, int nwarps, bool need_check, bool fixup>
 static __device__ void mul_mat_q_process_tile(
@@ -11784,6 +11870,7 @@ void mul_mat_q_case(ggml_backend_cuda_context & ctx, const mmq_args & args, cuda
 #define DECL_MMQ_CASE(type)                                                        \
     template void mul_mat_q_case<type>(ggml_backend_cuda_context & ctx, const mmq_args & args, cudaStream_t stream) \
 
+#ifndef ONLY_Q6_K
 extern DECL_MMQ_CASE(GGML_TYPE_Q4_0);
 extern DECL_MMQ_CASE(GGML_TYPE_Q4_1);
 extern DECL_MMQ_CASE(GGML_TYPE_Q5_0);
@@ -11793,7 +11880,9 @@ extern DECL_MMQ_CASE(GGML_TYPE_Q2_K);
 extern DECL_MMQ_CASE(GGML_TYPE_Q3_K);
 extern DECL_MMQ_CASE(GGML_TYPE_Q4_K);
 extern DECL_MMQ_CASE(GGML_TYPE_Q5_K);
+#endif
 extern DECL_MMQ_CASE(GGML_TYPE_Q6_K);
+#ifndef GGML_MINIMIZE_CODE_SIZE
 extern DECL_MMQ_CASE(GGML_TYPE_IQ2_XXS);
 extern DECL_MMQ_CASE(GGML_TYPE_IQ2_XS);
 extern DECL_MMQ_CASE(GGML_TYPE_IQ2_S);
@@ -11802,6 +11891,7 @@ extern DECL_MMQ_CASE(GGML_TYPE_IQ3_S);
 extern DECL_MMQ_CASE(GGML_TYPE_IQ1_S);
 extern DECL_MMQ_CASE(GGML_TYPE_IQ4_NL);
 extern DECL_MMQ_CASE(GGML_TYPE_IQ4_XS);
+#endif
 
 // -------------------------------------------------------------------------------------------------------------------------
 
@@ -11842,6 +11932,7 @@ void ggml_cuda_op_mul_mat_q(
     const mmq_args args = {src0_dd_i, src1_ddq_i, dst_dd_i, ne00, row_diff, stride00, src1_padded_row_size, src1_ncols, ne11, nrows_dst};
 
     switch (src0->type) {
+#ifndef ONLY_Q6_K
         case GGML_TYPE_Q4_0:
             mul_mat_q_case<GGML_TYPE_Q4_0>(ctx, args, stream);
             break;
@@ -11869,9 +11960,11 @@ void ggml_cuda_op_mul_mat_q(
         case GGML_TYPE_Q5_K:
             mul_mat_q_case<GGML_TYPE_Q5_K>(ctx, args, stream);
             break;
+#endif
         case GGML_TYPE_Q6_K:
             mul_mat_q_case<GGML_TYPE_Q6_K>(ctx, args, stream);
             break;
+#ifndef GGML_MINIMIZE_CODE_SIZE
         case GGML_TYPE_IQ2_XXS:
             mul_mat_q_case<GGML_TYPE_IQ2_XXS>(ctx, args, stream);
             break;
@@ -11896,6 +11989,7 @@ void ggml_cuda_op_mul_mat_q(
         case GGML_TYPE_IQ4_NL:
             mul_mat_q_case<GGML_TYPE_IQ4_NL>(ctx, args, stream);
             break;
+#endif
         default:
             GGML_ABORT("fatal error");
             break;
@@ -11914,6 +12008,7 @@ bool ggml_cuda_should_use_mmq(enum ggml_type type, int cc, int64_t ne11) {
     bool mmq_supported;
 
     switch (type) {
+#ifndef ONLY_Q6_K
         case GGML_TYPE_Q4_0:
         case GGML_TYPE_Q4_1:
         case GGML_TYPE_Q5_0:
@@ -11923,7 +12018,9 @@ bool ggml_cuda_should_use_mmq(enum ggml_type type, int cc, int64_t ne11) {
         case GGML_TYPE_Q3_K:
         case GGML_TYPE_Q4_K:
         case GGML_TYPE_Q5_K:
+#endif
         case GGML_TYPE_Q6_K:
+#ifndef GGML_MINIMIZE_CODE_SIZE
         case GGML_TYPE_IQ2_XXS:
         case GGML_TYPE_IQ2_XS:
         case GGML_TYPE_IQ2_S:
@@ -11932,6 +12029,7 @@ bool ggml_cuda_should_use_mmq(enum ggml_type type, int cc, int64_t ne11) {
         case GGML_TYPE_IQ1_S:
         case GGML_TYPE_IQ4_XS:
         case GGML_TYPE_IQ4_NL:
+#endif
             mmq_supported = true;
             break;
         default:
@@ -11987,7 +12085,9 @@ void ggml_cuda_op_mul_mat_vec_q(
 typedef float (*vec_dot_q_cuda_t)(const void * __restrict__ vbq, const block_q8_1 * __restrict__ bq8_1, const int & kbx, const int & iqs);
 
 static constexpr __device__ vec_dot_q_cuda_t get_vec_dot_q_cuda(ggml_type type) {
-    return type == GGML_TYPE_Q4_0 ? vec_dot_q4_0_q8_1 :
+    return
+#ifndef ONLY_Q6_K
+        type == GGML_TYPE_Q4_0 ? vec_dot_q4_0_q8_1 :
         type == GGML_TYPE_Q4_1 ? vec_dot_q4_1_q8_1 :
         type == GGML_TYPE_Q5_0 ? vec_dot_q5_0_q8_1 :
         type == GGML_TYPE_Q5_1 ? vec_dot_q5_1_q8_1 :
@@ -11996,7 +12096,9 @@ static constexpr __device__ vec_dot_q_cuda_t get_vec_dot_q_cuda(ggml_type type) 
         type == GGML_TYPE_Q3_K ? vec_dot_q3_K_q8_1 :
         type == GGML_TYPE_Q4_K ? vec_dot_q4_K_q8_1 :
         type == GGML_TYPE_Q5_K ? vec_dot_q5_K_q8_1 :
+#endif
         type == GGML_TYPE_Q6_K ? vec_dot_q6_K_q8_1 :
+#ifndef GGML_MINIMIZE_CODE_SIZE
         type == GGML_TYPE_IQ2_XXS ? vec_dot_iq2_xxs_q8_1 :
         type == GGML_TYPE_IQ2_XS ? vec_dot_iq2_xs_q8_1 :
         type == GGML_TYPE_IQ2_S ? vec_dot_iq2_s_q8_1 :
@@ -12006,11 +12108,14 @@ static constexpr __device__ vec_dot_q_cuda_t get_vec_dot_q_cuda(ggml_type type) 
         type == GGML_TYPE_IQ4_NL ? vec_dot_iq4_nl_q8_1 :
         type == GGML_TYPE_IQ4_XS ? vec_dot_iq4_xs_q8_1 :
         type == GGML_TYPE_IQ3_S ? vec_dot_iq3_s_q8_1 :
+#endif
         nullptr;
 }
 
 static constexpr __device__ int get_vdr_mmvq(ggml_type type) {
-    return type == GGML_TYPE_Q4_0 ? VDR_Q4_0_Q8_1_MMVQ :
+    return
+#ifndef ONLY_Q6_K
+        type == GGML_TYPE_Q4_0    ? VDR_Q4_0_Q8_1_MMVQ :
         type == GGML_TYPE_Q4_1    ? VDR_Q4_1_Q8_1_MMVQ :
         type == GGML_TYPE_Q5_0    ? VDR_Q5_0_Q8_1_MMVQ :
         type == GGML_TYPE_Q5_1    ? VDR_Q5_1_Q8_1_MMVQ :
@@ -12019,7 +12124,9 @@ static constexpr __device__ int get_vdr_mmvq(ggml_type type) {
         type == GGML_TYPE_Q3_K    ? VDR_Q3_K_Q8_1_MMVQ :
         type == GGML_TYPE_Q4_K    ? VDR_Q4_K_Q8_1_MMVQ :
         type == GGML_TYPE_Q5_K    ? VDR_Q5_K_Q8_1_MMVQ :
+#endif
         type == GGML_TYPE_Q6_K    ? VDR_Q6_K_Q8_1_MMVQ :
+#ifndef GGML_MINIMIZE_CODE_SIZE
         type == GGML_TYPE_IQ2_XXS ? VDR_IQ2_XXS_Q8_1_MMVQ :
         type == GGML_TYPE_IQ2_XS  ? VDR_IQ2_XS_Q8_1_MMVQ :
         type == GGML_TYPE_IQ2_S   ? VDR_IQ2_S_Q8_1_MMVQ :
@@ -12027,6 +12134,7 @@ static constexpr __device__ int get_vdr_mmvq(ggml_type type) {
         type == GGML_TYPE_IQ3_S   ? VDR_IQ3_S_Q8_1_MMVQ :
         type == GGML_TYPE_IQ4_NL  ? VDR_IQ4_NL_Q8_1_MMVQ :
         type == GGML_TYPE_IQ4_XS  ? VDR_IQ4_XS_Q8_1_MMVQ :
+#endif
         1;
 }
 
@@ -12184,6 +12292,7 @@ static void mul_mat_vec_q_cuda(
     }
 }
 
+#ifndef ONLY_Q6_K
 static void mul_mat_vec_q4_0_q8_1_cuda(
     const void * vx, const void * vy, float * dst,
     const int ncols_x, const int nrows_x, const int nrows_y, const int ncols_y, const int nrows_dst, cudaStream_t stream) {
@@ -12246,6 +12355,7 @@ static void mul_mat_vec_q5_K_q8_1_cuda(
 
     mul_mat_vec_q_cuda<GGML_TYPE_Q5_K>(vx, vy, dst, ncols_x, nrows_x, nrows_y, ncols_y, nrows_dst, stream);
 }
+#endif
 
 static void mul_mat_vec_q6_K_q8_1_cuda(
     const void * vx, const void * vy, float * dst,
@@ -12254,6 +12364,7 @@ static void mul_mat_vec_q6_K_q8_1_cuda(
     mul_mat_vec_q_cuda<GGML_TYPE_Q6_K>(vx, vy, dst, ncols_x, nrows_x, nrows_y, ncols_y, nrows_dst, stream);
 }
 
+#ifndef GGML_MINIMIZE_CODE_SIZE
 static void mul_mat_vec_iq2_xxs_q8_1_cuda(
     const void * vx, const void * vy, float * dst,
     const int ncols_x, const int nrows_x, const int nrows_y, const int ncols_y, const int nrows_dst, cudaStream_t stream) {
@@ -12316,6 +12427,7 @@ static void mul_mat_vec_iq3_s_q8_1_cuda(
 
     mul_mat_vec_q_cuda<GGML_TYPE_IQ3_S>(vx, vy, dst, ncols_x, nrows_x, nrows_y, ncols_y, nrows_dst, stream);
 }
+#endif
 
 void ggml_cuda_op_mul_mat_vec_q(
     ggml_backend_cuda_context & ctx,
@@ -12338,6 +12450,7 @@ void ggml_cuda_op_mul_mat_vec_q(
     const int64_t nrows_dst = id == ctx.device ? ne0 : row_diff;
 
     switch (src0->type) {
+#ifndef ONLY_Q6_K
         case GGML_TYPE_Q4_0:
             mul_mat_vec_q4_0_q8_1_cuda(src0_dd_i, src1_ddq_i, dst_dd_i, ne00, row_diff, src1_padded_row_size, src1_ncols, nrows_dst, stream);
             break;
@@ -12365,9 +12478,11 @@ void ggml_cuda_op_mul_mat_vec_q(
         case GGML_TYPE_Q5_K:
             mul_mat_vec_q5_K_q8_1_cuda(src0_dd_i, src1_ddq_i, dst_dd_i, ne00, row_diff, src1_padded_row_size, src1_ncols, nrows_dst, stream);
             break;
+#endif
         case GGML_TYPE_Q6_K:
             mul_mat_vec_q6_K_q8_1_cuda(src0_dd_i, src1_ddq_i, dst_dd_i, ne00, row_diff, src1_padded_row_size, src1_ncols, nrows_dst, stream);
             break;
+#ifndef GGML_MINIMIZE_CODE_SIZE
         case GGML_TYPE_IQ2_XXS:
             mul_mat_vec_iq2_xxs_q8_1_cuda(src0_dd_i, src1_ddq_i, dst_dd_i, ne00, row_diff, src1_padded_row_size, src1_ncols, nrows_dst, stream);
             break;
@@ -12395,6 +12510,7 @@ void ggml_cuda_op_mul_mat_vec_q(
         case GGML_TYPE_IQ3_S:
             mul_mat_vec_iq3_s_q8_1_cuda(src0_dd_i, src1_ddq_i, dst_dd_i, ne00, row_diff, src1_padded_row_size, src1_ncols, nrows_dst, stream);
             break;
+#endif
         default:
             GGML_ABORT("fatal error");
             break;
@@ -13239,6 +13355,7 @@ void ggml_cuda_op_rope(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
     float * dst_d = (float *)dst->data;
     cudaStream_t stream = ctx.stream();
 
+    // TODO[jart]: support bf16
     GGML_ASSERT(ggml_is_contiguous(src0));
     GGML_ASSERT(src0->type == GGML_TYPE_F32 || src0->type == GGML_TYPE_F16);
     GGML_ASSERT( dst->type == GGML_TYPE_F32 ||  dst->type == GGML_TYPE_F16);
@@ -14277,7 +14394,7 @@ static ggml_cuda_device_info ggml_cuda_init() {
 
         cudaDeviceProp prop;
         CUDA_CHECK(cudaGetDeviceProperties(&prop, id));
-        GGML_CUDA_LOG_INFO("  Device %d: %s, compute capability %d.%d, VMM: %s\n", id, prop.name, prop.major, prop.minor, device_vmm ? "yes" : "no");
+        GGML_CUDA_LOG_INFO("  Device %%d: %%s, compute capability %%d.%%d, VMM: %%s\n");
 
         info.default_tensor_split[id] = total_vram;
         total_vram += prop.totalGlobalMem;
@@ -16833,6 +16950,7 @@ GGML_CALL static bool ggml_backend_cuda_supports_op(ggml_backend_t backend, cons
                     case GGML_TYPE_F32:
                     case GGML_TYPE_F16:
                     case GGML_TYPE_BF16: // [jart]
+#ifndef ONLY_Q6_K
                     case GGML_TYPE_Q4_0:
                     case GGML_TYPE_Q4_1:
                     case GGML_TYPE_Q5_0:
@@ -16842,8 +16960,12 @@ GGML_CALL static bool ggml_backend_cuda_supports_op(ggml_backend_t backend, cons
                     case GGML_TYPE_Q3_K:
                     case GGML_TYPE_Q4_K:
                     case GGML_TYPE_Q5_K:
+#endif
                     case GGML_TYPE_Q6_K:
+#ifndef ONLY_Q6_K
                     case GGML_TYPE_Q8_K:
+#endif
+#ifndef GGML_MINIMIZE_CODE_SIZE
                     case GGML_TYPE_IQ1_M:
                     case GGML_TYPE_IQ1_S:
                     case GGML_TYPE_IQ2_S:
@@ -16853,6 +16975,7 @@ GGML_CALL static bool ggml_backend_cuda_supports_op(ggml_backend_t backend, cons
                     case GGML_TYPE_IQ3_XXS:
                     case GGML_TYPE_IQ4_NL:
                     case GGML_TYPE_IQ4_XS:
+#endif
                         return true;
                     default:
                         return false;
@@ -16864,11 +16987,13 @@ GGML_CALL static bool ggml_backend_cuda_supports_op(ggml_backend_t backend, cons
                     case GGML_TYPE_F16:
                     case GGML_TYPE_BF16: // [jart]
                     case GGML_TYPE_F32:
+#ifndef ONLY_Q6_K
                     case GGML_TYPE_Q4_0:
                     case GGML_TYPE_Q4_1:
                     case GGML_TYPE_Q5_0:
                     case GGML_TYPE_Q5_1:
                     case GGML_TYPE_Q8_0:
+#endif
                         return true;
                     default:
                         return false;
@@ -16884,6 +17009,7 @@ GGML_CALL static bool ggml_backend_cuda_supports_op(ggml_backend_t backend, cons
                 if (src0_type == GGML_TYPE_F32 && src1_type == GGML_TYPE_F16) {
                     return true;
                 }
+#ifndef ONLY_Q6_K
                 if (src0_type == GGML_TYPE_F32 && src1_type == GGML_TYPE_Q8_0) {
                     return true;
                 }
@@ -16899,9 +17025,12 @@ GGML_CALL static bool ggml_backend_cuda_supports_op(ggml_backend_t backend, cons
                 if (src0_type == GGML_TYPE_F32 && src1_type == GGML_TYPE_Q5_1) {
                     return true;
                 }
+#endif
+#ifndef GGML_MINIMIZE_CODE_SIZE
                 if (src0_type == GGML_TYPE_F32 && src1_type == GGML_TYPE_IQ4_NL) {
                     return true;
                 }
+#endif
                 if (src0_type == GGML_TYPE_F16 && src1_type == GGML_TYPE_F16) {
                     return true;
                 }
@@ -18234,7 +18363,9 @@ DECL_FATTN_WMMA_F16_CASE(256, 8, half);
 // This file has been autogenerated by generate_cu_files.py, do not edit manually.
 
 
+#ifndef GGML_MINIMIZE_CODE_SIZE
 DECL_MMQ_CASE(GGML_TYPE_IQ1_S);
+#endif
 
 ////////////////////////////////////////////////////////////////////////////////
 //
@@ -18245,7 +18376,9 @@ DECL_MMQ_CASE(GGML_TYPE_IQ1_S);
 // This file has been autogenerated by generate_cu_files.py, do not edit manually.
 
 
+#ifndef GGML_MINIMIZE_CODE_SIZE
 DECL_MMQ_CASE(GGML_TYPE_IQ2_S);
+#endif
 
 ////////////////////////////////////////////////////////////////////////////////
 //
@@ -18256,7 +18389,9 @@ DECL_MMQ_CASE(GGML_TYPE_IQ2_S);
 // This file has been autogenerated by generate_cu_files.py, do not edit manually.
 
 
+#ifndef GGML_MINIMIZE_CODE_SIZE
 DECL_MMQ_CASE(GGML_TYPE_IQ2_XS);
+#endif
 
 ////////////////////////////////////////////////////////////////////////////////
 //
@@ -18267,7 +18402,9 @@ DECL_MMQ_CASE(GGML_TYPE_IQ2_XS);
 // This file has been autogenerated by generate_cu_files.py, do not edit manually.
 
 
+#ifndef GGML_MINIMIZE_CODE_SIZE
 DECL_MMQ_CASE(GGML_TYPE_IQ2_XXS);
+#endif
 
 ////////////////////////////////////////////////////////////////////////////////
 //
@@ -18278,7 +18415,9 @@ DECL_MMQ_CASE(GGML_TYPE_IQ2_XXS);
 // This file has been autogenerated by generate_cu_files.py, do not edit manually.
 
 
+#ifndef GGML_MINIMIZE_CODE_SIZE
 DECL_MMQ_CASE(GGML_TYPE_IQ3_S);
+#endif
 
 ////////////////////////////////////////////////////////////////////////////////
 //
@@ -18289,7 +18428,9 @@ DECL_MMQ_CASE(GGML_TYPE_IQ3_S);
 // This file has been autogenerated by generate_cu_files.py, do not edit manually.
 
 
+#ifndef GGML_MINIMIZE_CODE_SIZE
 DECL_MMQ_CASE(GGML_TYPE_IQ3_XXS);
+#endif
 
 ////////////////////////////////////////////////////////////////////////////////
 //
@@ -18300,7 +18441,9 @@ DECL_MMQ_CASE(GGML_TYPE_IQ3_XXS);
 // This file has been autogenerated by generate_cu_files.py, do not edit manually.
 
 
+#ifndef GGML_MINIMIZE_CODE_SIZE
 DECL_MMQ_CASE(GGML_TYPE_IQ4_NL);
+#endif
 
 ////////////////////////////////////////////////////////////////////////////////
 //
@@ -18311,7 +18454,9 @@ DECL_MMQ_CASE(GGML_TYPE_IQ4_NL);
 // This file has been autogenerated by generate_cu_files.py, do not edit manually.
 
 
+#ifndef GGML_MINIMIZE_CODE_SIZE
 DECL_MMQ_CASE(GGML_TYPE_IQ4_XS);
+#endif
 
 ////////////////////////////////////////////////////////////////////////////////
 //
@@ -18322,7 +18467,9 @@ DECL_MMQ_CASE(GGML_TYPE_IQ4_XS);
 // This file has been autogenerated by generate_cu_files.py, do not edit manually.
 
 
+#ifndef ONLY_Q6_K
 DECL_MMQ_CASE(GGML_TYPE_Q2_K);
+#endif
 
 ////////////////////////////////////////////////////////////////////////////////
 //
@@ -18333,7 +18480,9 @@ DECL_MMQ_CASE(GGML_TYPE_Q2_K);
 // This file has been autogenerated by generate_cu_files.py, do not edit manually.
 
 
+#ifndef ONLY_Q6_K
 DECL_MMQ_CASE(GGML_TYPE_Q3_K);
+#endif
 
 ////////////////////////////////////////////////////////////////////////////////
 //
@@ -18344,7 +18493,9 @@ DECL_MMQ_CASE(GGML_TYPE_Q3_K);
 // This file has been autogenerated by generate_cu_files.py, do not edit manually.
 
 
+#ifndef ONLY_Q6_K
 DECL_MMQ_CASE(GGML_TYPE_Q4_0);
+#endif
 
 ////////////////////////////////////////////////////////////////////////////////
 //
@@ -18355,7 +18506,9 @@ DECL_MMQ_CASE(GGML_TYPE_Q4_0);
 // This file has been autogenerated by generate_cu_files.py, do not edit manually.
 
 
+#ifndef ONLY_Q6_K
 DECL_MMQ_CASE(GGML_TYPE_Q4_1);
+#endif
 
 ////////////////////////////////////////////////////////////////////////////////
 //
@@ -18366,7 +18519,9 @@ DECL_MMQ_CASE(GGML_TYPE_Q4_1);
 // This file has been autogenerated by generate_cu_files.py, do not edit manually.
 
 
+#ifndef ONLY_Q6_K
 DECL_MMQ_CASE(GGML_TYPE_Q4_K);
+#endif
 
 ////////////////////////////////////////////////////////////////////////////////
 //
@@ -18377,7 +18532,9 @@ DECL_MMQ_CASE(GGML_TYPE_Q4_K);
 // This file has been autogenerated by generate_cu_files.py, do not edit manually.
 
 
+#ifndef ONLY_Q6_K
 DECL_MMQ_CASE(GGML_TYPE_Q5_0);
+#endif
 
 ////////////////////////////////////////////////////////////////////////////////
 //
@@ -18388,7 +18545,9 @@ DECL_MMQ_CASE(GGML_TYPE_Q5_0);
 // This file has been autogenerated by generate_cu_files.py, do not edit manually.
 
 
+#ifndef ONLY_Q6_K
 DECL_MMQ_CASE(GGML_TYPE_Q5_1);
+#endif
 
 ////////////////////////////////////////////////////////////////////////////////
 //
@@ -18399,7 +18558,9 @@ DECL_MMQ_CASE(GGML_TYPE_Q5_1);
 // This file has been autogenerated by generate_cu_files.py, do not edit manually.
 
 
+#ifndef ONLY_Q6_K
 DECL_MMQ_CASE(GGML_TYPE_Q5_K);
+#endif
 
 ////////////////////////////////////////////////////////////////////////////////
 //
@@ -18421,4 +18582,6 @@ DECL_MMQ_CASE(GGML_TYPE_Q6_K);
 // This file has been autogenerated by generate_cu_files.py, do not edit manually.
 
 
+#ifndef ONLY_Q6_K
 DECL_MMQ_CASE(GGML_TYPE_Q8_0);
+#endif

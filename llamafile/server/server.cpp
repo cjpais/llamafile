@@ -16,23 +16,25 @@
 // limitations under the License.
 
 #include "server.h"
-
-#include <assert.h>
-#include <netinet/in.h>
-#include <netinet/tcp.h>
-#include <stdio.h>
-#include <sys/socket.h>
-#include <time.h>
-#include <unistd.h>
-
 #include "llamafile/crash.h"
 #include "llamafile/llamafile.h"
+#include "llamafile/server/log.h"
+#include "llamafile/server/server.h"
+#include "llamafile/server/slots.h"
+#include "llamafile/server/worker.h"
+#include <cassert>
+#include <cstdio>
+#include <ctime>
+#include <netinet/in.h>
+#include <netinet/tcp.h>
+#include <sys/socket.h>
+#include <unistd.h>
 
-#include "log.h"
-#include "server.h"
-#include "worker.h"
+namespace lf {
+namespace server {
 
-Server::Server(int fd) : fd(fd)
+Server::Server(int fd, Slots* slots, llama_model* model)
+  : fd(fd), slots_(slots), model_(model)
 {
 }
 
@@ -102,12 +104,12 @@ Server::spawn()
     errno_t err;
     Worker* worker;
     pthread_attr_t attr;
-    worker = new Worker(this);
+    worker = new Worker(this, model_);
     pthread_attr_init(&attr);
     pthread_attr_setguardsize(&attr, sysconf(_SC_PAGESIZE));
     pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
     pthread_attr_setsigaltstacksize_np(&attr, sysconf(_SC_MINSIGSTKSZ) + 16384);
-    if ((err = pthread_create(&worker->th, &attr, worker_thread, worker)))
+    if ((err = pthread_create(&worker->th_, &attr, worker_thread, worker)))
         delete worker;
     pthread_attr_destroy(&attr);
     return err;
@@ -193,3 +195,6 @@ Server::shutdown()
         unlock();
     }
 }
+
+} // namespace server
+} // namespace lf

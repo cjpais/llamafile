@@ -16,15 +16,15 @@
 // limitations under the License.
 
 #include "signals.h"
-
+#include "llamafile/crash.h"
+#include "llamafile/server/log.h"
+#include "llamafile/server/server.h"
+#include "llamafile/threadlocal.h"
 #include <signal.h>
 #include <ucontext.h>
 
-#include "llamafile/crash.h"
-#include "llamafile/threadlocal.h"
-
-#include "log.h"
-#include "server.h"
+namespace lf {
+namespace server {
 
 static struct
 {
@@ -107,3 +107,6 @@ signals_destroy(void)
     sigaction(SIGXCPU, &old.sigxcpu, 0);
     sigaction(SIGXFSZ, &old.sigxfsz, 0);
 }
+
+} // namespace server
+} // namespace lf

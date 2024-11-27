@@ -7,6 +7,7 @@
 
 #include "llamafile/log.h"
 #include "llama.cpp/cores.h"
+#include "llamafile/macros.h"
 #include "llama.h"
 
 #include "sampling.h"
@@ -19,9 +20,9 @@
 #include <cmath>
 #include <string>
 #include <vector>
-#include <random>
-#include <thread>
-#include <unordered_map>
+#include <__random/random_device.h> // [jart]
+#include <__random/mersenne_twister_engine.h> // [jart]
+// #include <unordered_map> // [jart]
 #include <tuple>
 #include <cosmo.h>
 
@@ -76,12 +77,12 @@ enum dimre_method {
 struct gpt_params {
     uint32_t seed                 = LLAMA_DEFAULT_SEED; // RNG seed
 
-    int32_t n_threads             = cpu_get_num_math();
+    int32_t n_threads             = MIN(cpu_get_num_math(), 20);
     int32_t n_threads_draft       =    -1;
-    int32_t n_threads_batch       =    -1; // number of threads to use for batch processing (-1 = use n_threads)
+    int32_t n_threads_batch       =    cpu_get_num_math(); // number of threads to use for batch processing (-1 = use n_threads)
     int32_t n_threads_batch_draft =    -1;
     int32_t n_predict             =    -1; // new tokens to predict
-    int32_t n_ctx                 =     0; // context size
+    int32_t n_ctx                 =  8192; // context size [jart]
     int32_t n_batch               =  2048; // logical batch size for prompt processing (must be >=32 to use BLAS)
     int32_t n_ubatch              =   512; // physical batch size for prompt processing (must be >=32 to use BLAS)
     int32_t n_keep                =     0; // number of tokens to keep from initial prompt
@@ -193,8 +194,9 @@ struct gpt_params {
     bool warmup            = true;  // warmup run
     bool check_tensors     = false; // validate tensor data
 
-    std::string cache_type_k = X86_HAVE(AVX512_BF16) ? "bf16" : "f16"; // KV cache data type for the K [jart]
-    std::string cache_type_v = X86_HAVE(AVX512_BF16) ? "bf16" : "f16"; // KV cache data type for the V [jart]
+    // [jart] warning: rope only supports f32 and f16
+    std::string cache_type_k = "f16"; // KV cache data type for the K
+    std::string cache_type_v = "f16"; // KV cache data type for the V
 
     // multimodal models (see examples/llava)
     std::string mmproj = "";        // path to multimodal projector
@@ -214,6 +216,7 @@ struct gpt_params {
 
     std::string hostname      = "127.0.0.1";
     std::string public_path   = "";
+    std::string url_prefix    = "";
     std::string chat_template = "";
     std::string system_prompt = "";
     bool enable_chat_template = true;
@@ -464,3 +467,9 @@ void yaml_dump_string_multiline(FILE * stream, const char * prop_name, const cha
 void yaml_dump_non_result_info(
     FILE * stream, const gpt_params & params, const llama_context * lctx,
     const std::string & timestamp, const std::vector<int> & prompt_tokens, const char * model_desc);
+
+//
+// JSON utils
+//
+
+std::string json_schema_string_to_grammar(const std::string_view& schema); // [jart]

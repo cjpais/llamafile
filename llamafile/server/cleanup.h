@@ -17,6 +17,19 @@
 
 #pragma once
 
+namespace lf {
+namespace server {
+
+struct Cleanup
+{
+    Cleanup* next;
+    void (*func)(void*);
+    void* arg;
+};
+
+void
+cleanup_fildes(void*);
+
 void
 cleanup_float_vector(void*);
 
@@ -28,3 +41,6 @@ cleanup_llama_batch(void*);
 
 void
 cleanup_llama_context(void*);
+
+} // namespace server
+} // namespace lf

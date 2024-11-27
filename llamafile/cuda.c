@@ -68,7 +68,7 @@ __static_yoink("_Cz_inflateEnd");
         "-DGGML_CUDA_DMMV_X=32", "-DK_QUANTS_PER_ITERATION=2", \
         "-DGGML_CUDA_PEER_MAX_BATCH_SIZE=128", "-DGGML_CUDA_MMV_Y=1", \
         (FLAG_tinyblas ? "-DGGML_USE_TINYBLAS" : "-DGGML_USE_CUBLAS"), \
-        (FLAG_flash_attn ? "-DTEHFLASH" : "-DGGML_MINIMIZE_CODE_SIZE")
+        (FLAG_iq || FLAG_flash_attn ? "-DTEHFLASH" : "-DGGML_MINIMIZE_CODE_SIZE")
 
 #define NVCC_FLAGS \
     (!IsWindows() ? "-std=c++11" : "-DIGNORE123"), "-O3", "--shared", "--use_fast_math", \
@@ -117,6 +117,7 @@ static struct Cuda {
     typeof(ggml_backend_cuda_get_device_count) *GGML_CALL get_device_count;
     typeof(ggml_backend_cuda_unregister_host_buffer) *GGML_CALL unreg_host_buf;
     typeof(ggml_backend_cuda_register_host_buffer) *GGML_CALL register_host_buffer;
+    typeof(ggml_backend_cuda_get_device_description) *GGML_CALL get_description;
 } ggml_cuda;
 
 static const char *Dlerror(void) {
@@ -575,7 +576,7 @@ static bool compile_amd_windows(const char *clangxx, const char *dso, const char
         "-DGGML_CUDA_PEER_MAX_BATCH_SIZE=128",
         "-DGGML_CUDA_MMV_Y=1",
         "-DGGML_USE_TINYBLAS",
-        FLAG_flash_attn ? "-DTEHFLASH" : "-DGGML_MINIMIZE_CODE_SIZE",
+        FLAG_iq || FLAG_flash_attn ? "-DTEHFLASH" : "-DGGML_MINIMIZE_CODE_SIZE",
         "-o",
         (char *)tmpdso,
         (char *)src,
@@ -735,6 +736,7 @@ static bool link_cuda_dso(const char *dso, const char *dir) {
     ok &= !!(ggml_cuda.get_device_count = imp(lib, "ggml_backend_cuda_get_device_count"));
     ok &= !!(ggml_cuda.unreg_host_buf = imp(lib, "ggml_backend_cuda_unregister_host_buffer"));
     ok &= !!(ggml_cuda.register_host_buffer = imp(lib, "ggml_backend_cuda_register_host_buffer"));
+    ok &= !!(ggml_cuda.get_description = imp(lib, "ggml_backend_cuda_get_device_description"));
     if (!ok) {
         tinylog(__func__, ": error: not all cuda symbols could be imported\n", NULL);
         cosmo_dlclose(lib);
@@ -1045,4 +1047,11 @@ GGML_CALL bool ggml_backend_cuda_register_host_buffer(void *buffer, size_t size)
     if (!llamafile_has_cuda())
         return false;
     return ggml_cuda.register_host_buffer(buffer, size);
+}
+
+GGML_CALL void ggml_backend_cuda_get_device_description(int device, char *description,
+                                                        size_t description_size) {
+    if (!llamafile_has_cuda())
+        return;
+    return ggml_cuda.get_description(device, description, description_size);
 }

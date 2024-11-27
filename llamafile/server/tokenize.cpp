@@ -16,28 +16,29 @@
 // limitations under the License.
 
 #include "client.h"
-
-#include <ctl/pair.h>
-#include <ctl/vector.h>
-#include <string.h>
-#include <sys/resource.h>
-
 #include "llama.cpp/llama.h"
+#include "llamafile/server/cleanup.h"
+#include "llamafile/server/fastjson.h"
+#include "llamafile/server/json.h"
+#include "llamafile/server/log.h"
+#include "llamafile/server/signals.h"
+#include "llamafile/server/utils.h"
+#include <cstring>
+#include <sys/resource.h>
+#include <utility>
+#include <vector>
 
-#include "cleanup.h"
-#include "fastjson.h"
-#include "json.h"
-#include "log.h"
-#include "model.h"
-#include "signals.h"
-#include "utils.h"
+using jt::Json;
+
+namespace lf {
+namespace server {
 
 struct TokenizeParams
 {
     bool add_special;
     bool parse_special;
-    ctl::string_view prompt;
-    ctl::string content;
+    std::string_view prompt;
+    std::string content;
 };
 
 void
@@ -51,25 +52,26 @@ Client::get_tokenize_params(TokenizeParams* params)
 {
     params->add_special = atob(or_empty(param("add_special")), true);
     params->parse_special = atob(or_empty(param("parse_special")), false);
-    ctl::optional<ctl::string_view> prompt = param("prompt");
+    std::optional<std::string_view> prompt = param("prompt");
     if (prompt.has_value()) {
         params->prompt = prompt.value();
     } else if (HasHeader(kHttpContentType)) {
         if (IsMimeType(HeaderData(kHttpContentType),
                        HeaderLength(kHttpContentType),
                        "text/plain")) {
-            params->prompt = payload;
+            params->prompt = payload_;
         } else if (IsMimeType(HeaderData(kHttpContentType),
                               HeaderLength(kHttpContentType),
                               "application/json")) {
-            ctl::pair<Json::Status, Json> json = Json::parse(payload);
+            std::pair<Json::Status, Json> json =
+              Json::parse(std::string(payload_));
             if (json.first != Json::success)
                 return send_error(400, Json::StatusToString(json.first));
             if (!json.second.isObject())
                 return send_error(400, "JSON body must be an object");
             if (!json.second["prompt"].isString())
                 return send_error(400, "JSON missing \"prompt\" key");
-            params->content = ctl::move(json.second["prompt"].getString());
+            params->content = std::move(json.second["prompt"].getString());
             params->prompt = params->content;
             if (json.second["add_special"].isBool())
                 params->add_special = json.second["add_special"].getBool();
@@ -79,7 +81,7 @@ Client::get_tokenize_params(TokenizeParams* params)
             return send_error(501, "Content Type Not Implemented");
         }
     } else {
-        params->prompt = payload;
+        params->prompt = payload_;
     }
     return true;
 }
@@ -87,7 +89,7 @@ Client::get_tokenize_params(TokenizeParams* params)
 bool
 Client::tokenize()
 {
-    if (msg.method != kHttpGet && msg.method != kHttpPost)
+    if (msg_.method != kHttpGet && msg_.method != kHttpPost)
         return send_error(405);
 
     if (!read_payload())
@@ -109,9 +111,9 @@ Client::tokenize()
     timespec started = timespec_real();
 
     // turn text into tokens
-    auto toks = new ctl::vector<llama_token>(params->prompt.size() + 16);
+    auto toks = new std::vector<llama_token>(params->prompt.size() + 16);
     defer_cleanup(cleanup_token_vector, toks);
-    int count = llama_tokenize(g_model,
+    int count = llama_tokenize(model_,
                                params->prompt.data(),
                                params->prompt.size(),
                                &(*toks)[0],
@@ -125,7 +127,7 @@ Client::tokenize()
     toks->resize(count);
 
     // serialize tokens to json
-    char* p = obuf.p;
+    char* p = obuf_.p;
     p = stpcpy(p, "{\n");
     p = stpcpy(p, "  \"add_special\": ");
     p = encode_bool(p, add_special);
@@ -140,16 +142,16 @@ Client::tokenize()
         p = stpcpy(p, "\n    ");
         char s[32];
         int n =
-          llama_token_to_piece(g_model, (*toks)[i], s, sizeof(s), false, true);
+          llama_token_to_piece(model_, (*toks)[i], s, sizeof(s), false, true);
         if (n < 0) {
             SLOG("failed to turn token into string");
             return send_error(405);
         }
-        p = encode_json(p, ctl::string_view(s, n));
+        p = encode_json(p, std::string_view(s, n));
     }
     p = stpcpy(p, "\n  ]\n");
     p = stpcpy(p, "}\n");
-    ctl::string_view content(obuf.p, p - obuf.p);
+    std::string_view content(obuf_.p, p - obuf_.p);
 
     // collect statistics
     rusage ruend = {};
@@ -175,3 +177,6 @@ Client::tokenize()
     p = stpcpy(p, "\r\n");
     return send_response(headers, p, content);
 }
+
+} // namespace server
+} // namespace lf

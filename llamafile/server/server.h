@@ -20,9 +20,16 @@
 #include <cosmo.h>
 #include <pthread.h>
 
+struct llama_model;
+
+namespace lf {
+namespace server {
+
+struct Slots;
+
 struct Server
 {
-    Server(int);
+    Server(int, Slots*, llama_model*);
     ~Server();
 
     int accept(unsigned*);
@@ -37,6 +44,8 @@ struct Server
     void wait();
 
     int fd;
+    Slots* slots_;
+    llama_model* model_;
     Dll* idle_workers = nullptr;
     Dll* active_workers = nullptr;
     pthread_cond_t cond_ = PTHREAD_COND_INITIALIZER;
@@ -49,3 +58,6 @@ extern Server* g_server;
 
 int
 create_listening_socket(const char*);
+
+} // namespace server
+} // namespace lf

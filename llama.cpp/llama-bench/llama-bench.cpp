@@ -4,7 +4,7 @@
 #include <algorithm>
 #include <array>
 #include <cassert>
-#include <chrono>
+// #include <chrono> [jart]
 #include <cinttypes>
 #include <clocale>
 #include <cmath>
@@ -25,7 +25,6 @@
 #include <pthread.h>
 #include <mutex> // TODO replace with pthreads
 #include <sys/stat.h>
-#include <sys/auxv.h>
 #include <libc/intrin/x86.h>
 #include "llama.cpp/cores.h"
 #include <libc/sysv/consts/hwcap.h>
@@ -41,7 +40,7 @@
 #include "llama.cpp/common.h"
 #include "llama.cpp/ggml-cuda.h"
 #include "llamafile/llamafile.h"
-
+#include "llamafile/compute.h"
 #include "powersampler.h"
 
 // utils
@@ -1407,7 +1406,7 @@ const bool        test::metal        = false; // !!ggml_cpu_has_metal(); // [jar
 const bool        test::gpu_blas     = false; // !!ggml_cpu_has_gpublas(); // [jart]
 const bool        test::blas         = false; // !!ggml_cpu_has_blas(); // [jart]
 const bool        test::sycl         = false; // !!ggml_cpu_has_sycl(); // [jart]
-const std::string test::cpu_info     = get_cpu_info();
+const std::string test::cpu_info     = llamafile_describe_cpu();
 const std::string test::gpu_info     = ""; //get_gpu_info(); // [jart]
 
 struct printer {

@@ -11,6 +11,7 @@
 #include "json-schema-to-grammar.h"
 #include "llama.h"
 #include "llamafile/debug.h"
+#include "llamafile/macros.h"
 #include "string.h"
 
 #include <cosmo.h>
@@ -167,6 +168,8 @@ bool gpt_params_parse_ex(int argc, char ** argv, gpt_params & params) {
 
     FLAGS_READY = true;
     params.n_gpu_layers = llamafile_gpu_layers(params.n_gpu_layers);
+    FLAG_threads = params.n_threads; // [jart]
+    FLAG_threads_batch = params.n_threads_batch; // [jart]
 
     return true;
 }
@@ -199,6 +202,12 @@ bool gpt_params_find_arg(int argc, char ** argv, const std::string & arg, gpt_pa
     if (arg == "--cli") {
         return true;
     }
+    if (arg == "--chat") {
+        return true;
+    }
+    if (arg == "--server") {
+        return true;
+    }
     if (arg == "--trace") {
         FLAG_trace = true;
         FLAG_unsecure = true;
@@ -206,6 +215,18 @@ bool gpt_params_find_arg(int argc, char ** argv, const std::string & arg, gpt_pa
     }
     if (arg == "--fast") {
         FLAG_fast = true;
+        return true;
+    }
+    if (arg == "--iq") {
+        FLAG_iq = true;
+        return true;
+    }
+    if (arg == "--ascii") {
+        FLAG_ascii = true;
+        return true;
+    }
+    if (arg == "--nologo") {
+        FLAG_nologo = true;
         return true;
     }
     if (arg == "--precise") {
@@ -244,6 +265,9 @@ bool gpt_params_find_arg(int argc, char ** argv, const std::string & arg, gpt_pa
             fprintf(stderr, "error: invalid --gpu flag value: %s\n", argv[i]);
             exit(1);
         }
+        if (FLAG_gpu >= 0 && params.n_gpu_layers == -1) {
+            params.n_gpu_layers = 999;
+        }
         return true;
     }
 
@@ -252,22 +276,22 @@ bool gpt_params_find_arg(int argc, char ** argv, const std::string & arg, gpt_pa
         // TODO: this is temporary, in the future the sampling state will be moved fully to llama_sampling_context.
         params.seed = std::stoul(argv[i]);
         sparams.seed = std::stoul(argv[i]);
+        FLAG_seed = sparams.seed; // [jart]
         return true;
     }
     if (arg == "-t" || arg == "--threads") {
         CHECK_ARG
         params.n_threads = std::stoi(argv[i]);
         if (params.n_threads <= 0) {
-            params.n_threads = std::thread::hardware_concurrency();
+            params.n_threads = MIN(cpu_get_num_math(), 20); // [jart]
         }
-        FLAG_threads = params.n_threads; // [jart]
         return true;
     }
     if (arg == "-tb" || arg == "--threads-batch") {
         CHECK_ARG
         params.n_threads_batch = std::stoi(argv[i]);
         if (params.n_threads_batch <= 0) {
-            params.n_threads_batch = std::thread::hardware_concurrency();
+            params.n_threads_batch = cpu_get_num_math(); // [jart]
         }
         return true;
     }
@@ -275,7 +299,7 @@ bool gpt_params_find_arg(int argc, char ** argv, const std::string & arg, gpt_pa
         CHECK_ARG
         params.n_threads_draft = std::stoi(argv[i]);
         if (params.n_threads_draft <= 0) {
-            params.n_threads_draft = std::thread::hardware_concurrency();
+            params.n_threads_draft = cpu_get_num_math(); // [jart]
         }
         return true;
     }
@@ -283,7 +307,7 @@ bool gpt_params_find_arg(int argc, char ** argv, const std::string & arg, gpt_pa
         CHECK_ARG
         params.n_threads_batch_draft = std::stoi(argv[i]);
         if (params.n_threads_batch_draft <= 0) {
-            params.n_threads_batch_draft = std::thread::hardware_concurrency();
+            params.n_threads_batch_draft = cpu_get_num_math(); // [jart]
         }
         return true;
     }
@@ -368,7 +392,7 @@ bool gpt_params_find_arg(int argc, char ** argv, const std::string & arg, gpt_pa
     }
     if (arg == "-c" || arg == "--ctx-size") {
         CHECK_ARG
-        params.n_ctx = std::stoi(argv[i]);
+        FLAG_ctx_size = params.n_ctx = std::stoi(argv[i]);
         return true;
     }
     if (arg == "--grp-attn-n" || arg == "-gan") {
@@ -467,6 +491,7 @@ bool gpt_params_find_arg(int argc, char ** argv, const std::string & arg, gpt_pa
     if (arg == "--top-p") {
         CHECK_ARG
         sparams.top_p = std::stof(argv[i]);
+        FLAG_top_p = sparams.top_p; // [jart]
         return true;
     }
     if (arg == "--min-p") {
@@ -474,10 +499,12 @@ bool gpt_params_find_arg(int argc, char ** argv, const std::string & arg, gpt_pa
         sparams.min_p = std::stof(argv[i]);
         return true;
     }
-    if (arg == "--temp") {
+    if (arg == "--temp" || //
+        arg == "--temperature") { // [jart]
         CHECK_ARG
         sparams.temp = std::stof(argv[i]);
         sparams.temp = std::max(sparams.temp, 0.0f);
+        FLAG_temperature = sparams.temp; // [jart]
         return true;
     }
     if (arg == "--tfs") {
@@ -504,11 +531,13 @@ bool gpt_params_find_arg(int argc, char ** argv, const std::string & arg, gpt_pa
     if (arg == "--frequency-penalty") {
         CHECK_ARG
         sparams.penalty_freq = std::stof(argv[i]);
+        FLAG_frequency_penalty = sparams.penalty_freq; // [jart]
         return true;
     }
     if (arg == "--presence-penalty") {
         CHECK_ARG
         sparams.penalty_present = std::stof(argv[i]);
+        FLAG_presence_penalty = sparams.penalty_present; // [jart]
         return true;
     }
     if (arg == "--dynatemp-range") {
@@ -675,9 +704,10 @@ bool gpt_params_find_arg(int argc, char ** argv, const std::string & arg, gpt_pa
         params.control_vector_layer_end = std::stoi(argv[i]);
         return true;
     }
-    if (arg == "--mmproj") {
+    if (arg == "-mm" || arg == "--mmproj") { // [jart]
         CHECK_ARG
         params.mmproj = argv[i];
+        FLAG_mmproj = argv[i]; // [jart]
         return true;
     }
     if (arg == "--image") {
@@ -817,6 +847,7 @@ bool gpt_params_find_arg(int argc, char ** argv, const std::string & arg, gpt_pa
             invalid_param = true;
             return true;
         }
+        FLAG_split_mode = params.split_mode; // [jart]
 // #ifndef GGML_USE_CUDA_SYCL_VULKAN // [jart]
 //         fprintf(stderr, "warning: llama.cpp was compiled without CUDA/SYCL/Vulkan. Setting the split mode has no effect.\n");
 // #endif // GGML_USE_CUDA_SYCL_VULKAN
@@ -878,8 +909,15 @@ bool gpt_params_find_arg(int argc, char ** argv, const std::string & arg, gpt_pa
         params.verbose_prompt = true;
         return true;
     }
-    if (arg == "--no-display-prompt" || arg == "--silent-prompt") {
+    if (arg == "--no-display-prompt" || //
+        arg == "--silent-prompt") { // [jart]
         params.display_prompt = false;
+        FLAG_no_display_prompt = true; // [jart]
+        return true;
+    }
+    if (arg == "--display-prompt") { // [jart]
+        params.display_prompt = true;
+        FLAG_no_display_prompt = false;
         return true;
     }
     if (arg == "-r" || arg == "--reverse-prompt") {
@@ -1045,7 +1083,7 @@ bool gpt_params_find_arg(int argc, char ** argv, const std::string & arg, gpt_pa
     }
     if (arg == "-j" || arg == "--json-schema") {
         CHECK_ARG
-        sparams.grammar = json_schema_to_grammar(json::parse(argv[i]));
+        sparams.grammar = json_schema_string_to_grammar(argv[i]);
         return true;
     }
     if (arg == "--override-kv") {
@@ -1070,6 +1108,11 @@ bool gpt_params_find_arg(int argc, char ** argv, const std::string & arg, gpt_pa
     if (arg == "--path") {
         CHECK_ARG
         params.public_path = argv[i];
+        return true;
+    }
+    if (arg == "--url-prefix") {
+        CHECK_ARG
+        params.url_prefix = argv[i];
         return true;
     }
     if (arg == "--api-key") {
@@ -1170,6 +1213,7 @@ bool gpt_params_find_arg(int argc, char ** argv, const std::string & arg, gpt_pa
             return true;
         }
         params.chat_template = argv[i];
+        FLAG_chat_template = argv[i]; // [jart]
         return true;
     }
     if (arg == "--slot-prompt-similarity" || arg == "-sps") {
@@ -1599,6 +1643,7 @@ void gpt_params_print_usage(int /*argc*/, char ** argv, const gpt_params & param
     options.push_back({ "server",      "       --host HOST",            "ip address to listen (default: %s)", params.hostname.c_str() });
     options.push_back({ "server",      "       --port PORT",            "port to listen (default: %d)", params.port });
     options.push_back({ "server",      "       --path PATH",            "path to serve static files from (default: %s)", params.public_path.c_str() });
+    options.push_back({ "server",      "       --url-prefix PREFIX",    "Specify a URL prefix (subdirectory) under which the API will be served, e.g. /llamafile (default: %s)", params.url_prefix.c_str() });
     options.push_back({ "server",      "       --embedding(s)",         "enable embedding endpoint (default: %s)", params.embedding ? "enabled" : "disabled" });
     options.push_back({ "server",      "       --api-key KEY",          "API key to use for authentication (default: none)" });
     options.push_back({ "server",      "       --api-key-file FNAME",   "path to file containing API keys (default: none)" });
@@ -1681,7 +1726,7 @@ std::string gpt_params_get_system_info(const gpt_params & params) {
     if (params.n_threads_batch != -1) {
         os << " (n_threads_batch = " << params.n_threads_batch << ")";
     }
-    os << " / " << std::thread::hardware_concurrency() << " | " << llama_print_system_info();
+    os << " / " << cpu_get_num_math() << " | " << llama_print_system_info(); // [jart]
 
     return os.str();
 }
@@ -3227,11 +3272,15 @@ void yaml_dump_non_result_info(FILE * stream, const gpt_params & params, const l
     yaml_dump_vector_float(stream, "tensor_split", tensor_split_vector);
 
     fprintf(stream, "tfs: %f # default: 1.0\n", sparams.tfs_z);
-    fprintf(stream, "threads: %d # default: %u\n", params.n_threads, std::thread::hardware_concurrency());
+    fprintf(stream, "threads: %d # default: %u\n", params.n_threads, cpu_get_num_math()); // [jart]
     fprintf(stream, "top_k: %d # default: 40\n", sparams.top_k);
     fprintf(stream, "top_p: %f # default: 0.95\n", sparams.top_p);
     fprintf(stream, "min_p: %f # default: 0.0\n", sparams.min_p);
     fprintf(stream, "typical_p: %f # default: 1.0\n", sparams.typical_p);
     fprintf(stream, "verbose_prompt: %s # default: false\n", params.verbose_prompt ? "true" : "false");
     fprintf(stream, "display_prompt: %s # default: true\n", params.display_prompt ? "true" : "false");
+}
+
+std::string json_schema_string_to_grammar(const std::string_view& schema) {
+    return json_schema_to_grammar(json::parse(schema));
 }

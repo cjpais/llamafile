@@ -16,14 +16,15 @@
 // limitations under the License.
 
 #include "tokenbucket.h"
-
+#include "llamafile/llamafile.h"
+#include "llamafile/server/log.h"
 #include <assert.h>
 #include <pthread.h>
 #include <signal.h>
 #include <stdatomic.h>
 
-#include "llamafile/llamafile.h"
-#include "llamafile/server/log.h"
+namespace lf {
+namespace server {
 
 union TokenBucket
 {
@@ -123,3 +124,6 @@ tokenbucket_acquire(unsigned ip)
 {
     return acquire_token(g_tokens.b, ip, FLAG_token_cidr);
 }
+
+} // namespace server
+} // namespace lf

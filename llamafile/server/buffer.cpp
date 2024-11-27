@@ -16,9 +16,11 @@
 // limitations under the License.
 
 #include "buffer.h"
-
 #include <sys/mman.h>
 #include <unistd.h>
+
+namespace lf {
+namespace server {
 
 static int pagesz = getpagesize();
 
@@ -46,3 +48,6 @@ Buffer::~Buffer() noexcept
     if (munmap(p, c + pagesz))
         __builtin_trap();
 }
+
+} // namespace server
+} // namespace lf

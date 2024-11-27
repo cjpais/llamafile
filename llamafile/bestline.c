@@ -64,6 +64,7 @@
 │   CTRL-P         PREVIOUS HISTORY                                            │
 │   CTRL-R         SEARCH HISTORY                                              │
 │   CTRL-G         CANCEL SEARCH                                               │
+│   CTRL-J         INSERT NEWLINE                                              │
 │   ALT-<          BEGINNING OF HISTORY                                        │
 │   ALT->          END OF HISTORY                                              │
 │   ALT-F          FORWARD WORD                                                │
@@ -235,6 +236,7 @@ static int gotcont;
 static int gotwinch;
 static signed char rawmode;
 static char maskmode;
+static char emacsmode;
 static char llamamode;
 static char balancemode;
 static char ispaused;
@@ -2006,25 +2008,31 @@ static ssize_t bestlineCompleteLine(struct bestlineState *ls, char *seq, int siz
     ssize_t nread;
     size_t i, n, stop;
     bestlineCompletions lc;
-    struct bestlineState saved;
+    struct bestlineState original, saved;
     nread = 0;
     memset(&lc, 0, sizeof(lc));
-    completionCallback(ls->buf, &lc);
+    completionCallback(ls->buf, ls->pos, &lc);
     if (!lc.len) {
         bestlineBeep();
     } else {
         i = 0;
         stop = 0;
+        original = *ls;
         while (!stop) {
             /* Show completion or original buffer */
             if (i < lc.len) {
                 saved = *ls;
-                ls->len = ls->pos = strlen(lc.cvec[i]);
+                ls->len = strlen(lc.cvec[i]);
+                ls->pos = original.pos + ls->len - original.len;
                 ls->buf = lc.cvec[i];
                 bestlineRefreshLine(ls);
                 ls->len = saved.len;
                 ls->pos = saved.pos;
                 ls->buf = saved.buf;
+                if (lc.len == 1) {
+                    nread = 0;
+                    goto FinishQuickly;
+                }
             } else {
                 bestlineRefreshLine(ls);
             }
@@ -2041,10 +2049,12 @@ static ssize_t bestlineCompleteLine(struct bestlineState *ls, char *seq, int siz
                 break;
             default:
                 if (i < lc.len) {
+                FinishQuickly:
                     n = strlen(lc.cvec[i]);
                     if (bestlineGrow(ls, n + 1)) {
                         memcpy(ls->buf, lc.cvec[i], n + 1);
-                        ls->len = ls->pos = n;
+                        ls->len = n;
+                        ls->pos = original.pos + n - original.len;
                     }
                 }
                 stop = 1;
@@ -3100,6 +3110,7 @@ static ssize_t bestlineEdit(int stdin_fd, int stdout_fd, const char *prompt, con
                             char **obuf) {
     ssize_t rc;
     char seq[16];
+    const char *promptnotnull, *promptlastnl;
     size_t nread;
     int pastemode;
     struct rune rune;
@@ -3112,11 +3123,13 @@ static ssize_t bestlineEdit(int stdin_fd, int stdout_fd, const char *prompt, con
     l.buf[0] = 0;
     l.ifd = stdin_fd;
     l.ofd = stdout_fd;
-    l.prompt = prompt ? prompt : "";
+    promptnotnull = prompt ? prompt : "";
+    promptlastnl = strrchr(promptnotnull, '\n');
+    l.prompt = promptlastnl ? promptlastnl + 1 : promptnotnull;
     l.ws = GetTerminalSize(l.ws, l.ifd, l.ofd);
     abInit(&l.full);
     bestlineHistoryAdd("");
-    bestlineWriteStr(l.ofd, l.prompt);
+    bestlineWriteStr(l.ofd, promptnotnull);
     init = init ? init : "";
     bestlineEditInsert(&l, init, strlen(init));
     while (1) {
@@ -3141,8 +3154,10 @@ static ssize_t bestlineEdit(int stdin_fd, int stdout_fd, const char *prompt, con
             seq[0] = '\r';
             seq[1] = 0;
         } else {
-            free(history[--historylen]);
-            history[historylen] = 0;
+            if (historylen) {
+                free(history[--historylen]);
+                history[historylen] = 0;
+            }
             free(l.buf);
             abFree(&l.full);
             return -1;
@@ -3168,15 +3183,19 @@ static ssize_t bestlineEdit(int stdin_fd, int stdout_fd, const char *prompt, con
             Case(Ctrl('K'), bestlineEditKillRight(&l));
             Case(Ctrl('W'), bestlineEditRuboutWord(&l));
         case Ctrl('C'):
-            if (bestlineRead(l.ifd, seq, sizeof(seq), &l) != 1)
-                break;
-            switch (seq[0]) {
-                Case(Ctrl('C'), bestlineEditInterrupt());
-                Case(Ctrl('B'), bestlineEditBarf(&l));
-                Case(Ctrl('S'), bestlineEditSlurp(&l));
-                Case(Ctrl('R'), bestlineEditRaise(&l));
-            default:
-                break;
+            if (emacsmode) {
+                if (bestlineRead(l.ifd, seq, sizeof(seq), &l) != 1)
+                    break;
+                switch (seq[0]) {
+                    Case(Ctrl('C'), bestlineEditInterrupt());
+                    Case(Ctrl('B'), bestlineEditBarf(&l));
+                    Case(Ctrl('S'), bestlineEditSlurp(&l));
+                    Case(Ctrl('R'), bestlineEditRaise(&l));
+                default:
+                    break;
+                }
+            } else {
+                bestlineEditInterrupt();
             }
             break;
         case Ctrl('X'):
@@ -3188,22 +3207,35 @@ static ssize_t bestlineEdit(int stdin_fd, int stdout_fd, const char *prompt, con
             if (l.len) {
                 bestlineEditDelete(&l);
             } else {
-                free(history[--historylen]);
-                history[historylen] = 0;
+                if (historylen) {
+                    free(history[--historylen]);
+                    history[historylen] = 0;
+                }
                 free(l.buf);
                 abFree(&l.full);
                 return -1;
             }
             break;
-        case '\r':
-            if (nread >= 2 && seq[1] == '\n')
-                memmove(seq, seq + 1, --nread);
-        // fallthrough
-        case '\n': {
+        case '\n':
+            l.final = 1;
+            bestlineEditEnd(&l);
+            bestlineRefreshLineForce(&l);
+            l.final = 0;
+            abAppend(&l.full, l.buf, l.len);
+            l.prompt = "... ";
+            abAppends(&l.full, "\n");
+            l.len = 0;
+            l.pos = 0;
+            bestlineWriteStr(stdout_fd, "\r\n");
+            bestlineRefreshLineForce(&l);
+            break;
+        case '\r': {
             char is_finished = 1;
             char needs_strip = 0;
-            free(history[--historylen]);
-            history[historylen] = 0;
+            if (historylen) {
+                free(history[--historylen]);
+                history[historylen] = 0;
+            }
             l.final = 1;
             bestlineEditEnd(&l);
             bestlineRefreshLineForce(&l);
@@ -3541,8 +3573,7 @@ char *bestlineRaw(const char *prompt, int infd, int outfd) {
  * capabilites.
  */
 char *bestlineInit(const char *prompt, const char *init) {
-    if (prompt && *prompt &&
-        (strchr(prompt, '\n') || strchr(prompt, '\t') || strchr(prompt + 1, '\r'))) {
+    if (prompt && *prompt && (strchr(prompt, '\t') || strchr(prompt + 1, '\r'))) {
         errno = EINVAL;
         return 0;
     }
@@ -3757,6 +3788,16 @@ void bestlineBalanceMode(char mode) {
  */
 void bestlineLlamaMode(char mode) {
     llamamode = mode;
+}
+
+/**
+ * Enables Emacs mode.
+ *
+ * This mode remaps CTRL-C so you can use additional shortcuts, like C-c
+ * C-s for slurp. By default, CTRL-C raises SIGINT for exiting programs.
+ */
+void bestlineEmacsMode(char mode) {
+    emacsmode = mode;
 }
 
 /**

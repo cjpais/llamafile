@@ -17,66 +17,66 @@
 
 #include "fastjson.h"
 
-#include <ctl/string.h>
-#include <limits.h>
-#include <math.h>
-#include <stdio.h>
+#include <climits>
+#include <cmath>
+#include <cstdio>
+#include <string>
 
-using namespace ctl;
+namespace lf {
+namespace server {
 
-string
+std::string
 encode_json(int x) noexcept
 {
     char buf[12];
     return { buf, (size_t)(encode_json(buf, x) - buf) };
 }
 
-string
+std::string
 encode_json(long x) noexcept
 {
     char buf[21];
     return { buf, (size_t)(encode_json(buf, x) - buf) };
 }
 
-string
+std::string
 encode_json(double x) noexcept
 {
     char buf[128];
     return { buf, (size_t)(encode_json(buf, x) - buf) };
 }
 
-string
+std::string
 encode_json(unsigned x) noexcept
 {
     char buf[128];
     return { buf, (size_t)(encode_json(buf, x) - buf) };
 }
 
-string
+std::string
 encode_json(unsigned long x) noexcept
 {
     char buf[128];
     return { buf, (size_t)(encode_json(buf, x) - buf) };
 }
 
-string
-encode_json(const string_view x) noexcept
+std::string
+encode_json(const std::string_view x) noexcept
 {
     char buf[128];
     return { buf, (size_t)(encode_json(buf, x) - buf) };
 }
 
-string
-encode_js_string_literal(const string_view x) noexcept
+std::string
+encode_js_string_literal(const std::string_view x) noexcept
 {
     char buf[256]; // this isn't secure (no guard page)
     return { buf, (size_t)(encode_json(buf, x) - buf) };
 }
 
 int
-main(int argc, char* argv[])
+fastjson_test()
 {
-
     if (encode_json(0) != "0")
         return 1;
     if (encode_json(INT_MAX) != "2147483647")
@@ -94,7 +94,7 @@ main(int argc, char* argv[])
 
     if (encode_json("") != "\"\"")
         return 8;
-    if (encode_json(string_view("\0\1", 2)) != "\"\\u0000\\u0001\"")
+    if (encode_json(std::string_view("\0\1", 2)) != "\"\\u0000\\u0001\"")
         return 9;
     if (encode_json("\n\"\\\t") != "\"\\n\\\"\\\\\\t\"")
         return 10;
@@ -125,4 +125,13 @@ main(int argc, char* argv[])
         return 21;
 
     return 0;
+}
+
+} // namespace server
+} // namespace lf
+
+int
+main()
+{
+    return lf::server::fastjson_test();
 }

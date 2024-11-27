@@ -16,18 +16,31 @@
 // limitations under the License.
 
 #pragma once
-#include <ctl/optional.h>
-#include <ctl/string_view.h>
+#include <__fwd/string.h>
+#include <__fwd/string_view.h>
+#include <__fwd/vector.h>
+#include <optional>
+
+struct llama_model;
+
+namespace lf {
+namespace server {
+
+class Atom;
 
 extern const signed char kHexToInt[256];
 
 bool
-atob(ctl::string_view, bool);
+atob(std::string_view, bool);
 
-static inline ctl::string_view
-or_empty(ctl::optional<ctl::string_view> x)
-{
-    if (x.has_value())
-        return x.value();
-    return {};
-}
+std::string_view
+or_empty(std::optional<std::string_view> x);
+
+void
+atomize(const llama_model* model,
+        std::vector<Atom>* result,
+        std::string_view s,
+        bool parse_special);
+
+} // namespace server
+} // namespace lf

@@ -18,6 +18,7 @@
 #include <cosmo.h>
 
 #include "llamafile/version.h"
+#include "llamafile/chatbot.h"
 #include "llama.cpp/llama.h"
 #include "llama.cpp/string.h"
 #include "llama.cpp/common.h"
@@ -35,9 +36,6 @@ static std::ostringstream       * g_output_ss;
 static std::vector<llama_token> * g_output_tokens;
 static bool is_interacting  = false;
 static bool need_insert_eot = false;
-
-extern "C" int nsync_futex_wake_(int *, int, char);
-extern "C" int nsync_futex_wait_(int *, int, char, const struct timespec *);
 
 static bool file_exists(const std::string & path) {
     std::ifstream f(path.c_str());
@@ -99,7 +97,7 @@ static int is_killed;
 
 static void *safe_sigint_handler(void *arg) {
     while (!is_killed)
-        nsync_futex_wait_(&is_killed, 0, 0, 0);
+        cosmo_futex_wait(&is_killed, 0, 0, 0, 0);
     console::cleanup();
     printf("\n");
     llama_print_timings(*g_ctx);
@@ -124,7 +122,7 @@ static void sigint_handler(int signo) {
             is_interacting = true;
         } else {
             is_killed = true;
-            nsync_futex_wake_(&is_killed, 1, 0);
+            cosmo_futex_wake(&is_killed, 1, 0);
             for (;;) {
             }
         }
@@ -144,6 +142,30 @@ static std::string chat_add_and_format(struct llama_model * model, std::vector<l
     chat_msgs.push_back({role, content});
     LOG("formatted: %s\n", formatted.c_str());
     return formatted;
+}
+
+enum Program {
+    UNKNOWN,
+    MAIN,
+    SERVER,
+    CHATBOT,
+    EMBEDDING,
+};
+
+enum Program determine_program(char *argv[]) {
+    enum Program prog = UNKNOWN;
+    for (int i = 0; argv[i]; ++i) {
+        if (!strcmp(argv[i], "--cli")) {
+            prog = MAIN;
+        } else if (!strcmp(argv[i], "--chat")) {
+            prog = CHATBOT;
+        } else if (!strcmp(argv[i], "--server")) {
+            prog = SERVER;
+        } else if (!strcmp(argv[i], "--embedding")) {
+            prog = EMBEDDING;
+        }
+    }
+    return prog;
 }
 
 int main(int argc, char ** argv) {
@@ -166,21 +188,27 @@ int main(int argc, char ** argv) {
 
     llamafile_check_cpu();
     ShowCrashReports();
-    LoadZipArgs(&argc, &argv);
-    launch_sigint_thread();
+    argc = cosmo_args("/zip/.args", &argv);
 
-    if (!llamafile_has(argv, "--cli") &&
-        (llamafile_has(argv, "--server") ||
-         (!llamafile_has(argv, "-p") &&
-          !llamafile_has(argv, "-f") &&
-          !llamafile_has(argv, "--random-prompt")))) {
+    enum Program prog = determine_program(argv);
+
+    if (prog == SERVER)
         return server_cli(argc, argv);
+
+    if (prog == CHATBOT ||
+        (prog == UNKNOWN &&
+         !llamafile_has(argv, "-p") &&
+         !llamafile_has(argv, "-f") &&
+         !llamafile_has(argv, "--random-prompt"))) {
+        return lf::chatbot::main(argc, argv);
     }
 
-    if (llamafile_has(argv, "--embedding")) {
+    if (prog == EMBEDDING) {
         int embedding_cli(int, char **);
         return embedding_cli(argc, argv);
     }
+
+    launch_sigint_thread();
 
     gpt_params params;
     g_params = &params;
@@ -204,7 +232,7 @@ int main(int argc, char ** argv) {
         return 1;
     }
 
-    if (!FLAG_unsecure && !llamafile_has_gpu()) {
+    if (!FLAG_unsecure && !llamafile_has_gpu() && !g_server_background_mode) {
         // Enable pledge() security on Linux and OpenBSD.
         // - We do this *after* opening the log file for writing.
         // - We do this *before* loading any weights or graphdefs.

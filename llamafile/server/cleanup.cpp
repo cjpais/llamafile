@@ -16,21 +16,29 @@
 // limitations under the License.
 
 #include "cleanup.h"
-
-#include <ctl/vector.h>
-
 #include "llama.cpp/llama.h"
+#include <unistd.h>
+#include <vector>
+
+namespace lf {
+namespace server {
+
+void
+cleanup_fildes(void* arg)
+{
+    close((intptr_t)arg);
+}
 
 void
 cleanup_float_vector(void* arg)
 {
-    delete (ctl::vector<float>*)arg;
+    delete (std::vector<float>*)arg;
 }
 
 void
 cleanup_token_vector(void* arg)
 {
-    delete (ctl::vector<llama_token>*)arg;
+    delete (std::vector<int>*)arg;
 }
 
 void
@@ -46,3 +54,6 @@ cleanup_llama_context(void* arg)
 {
     llama_free((llama_context*)arg);
 }
+
+} // namespace server
+} // namespace lf

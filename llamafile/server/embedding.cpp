@@ -16,28 +16,29 @@
 // limitations under the License.
 
 #include "client.h"
-
-#include <ctl/vector.h>
-#include <math.h>
-#include <string.h>
-#include <sys/resource.h>
-
 #include "llama.cpp/llama.h"
+#include "llamafile/server/cleanup.h"
+#include "llamafile/server/fastjson.h"
+#include "llamafile/server/json.h"
+#include "llamafile/server/log.h"
+#include "llamafile/server/utils.h"
+#include <cmath>
+#include <cstring>
+#include <sys/resource.h>
+#include <vector>
 
-#include "cleanup.h"
-#include "fastjson.h"
-#include "json.h"
-#include "log.h"
-#include "model.h"
-#include "utils.h"
+using jt::Json;
+
+namespace lf {
+namespace server {
 
 struct EmbeddingParams
 {
     bool add_special;
     bool parse_special;
-    ctl::string_view prompt;
-    ctl::string content;
-    ctl::string model;
+    std::string_view prompt;
+    std::string content;
+    std::string model;
 };
 
 void
@@ -56,7 +57,7 @@ static void
 add_token_to_batch(struct llama_batch& batch,
                    llama_token id,
                    llama_pos pos,
-                   const ctl::vector<llama_seq_id>& seq_ids,
+                   const std::vector<llama_seq_id>& seq_ids,
                    bool logits)
 {
     batch.token[batch.n_tokens] = id;
@@ -81,15 +82,15 @@ Client::get_embedding_params(EmbeddingParams* params)
     params->parse_special = atob(or_empty(param("parse_special")), false);
 
     // try obtaining prompt (or its aliases) from request-uri
-    ctl::optional<ctl::string_view> prompt = param("content");
+    std::optional<std::string_view> prompt = param("content");
     if (!prompt.has_value()) {
-        ctl::optional<ctl::string_view> prompt2 = param("prompt");
+        std::optional<std::string_view> prompt2 = param("prompt");
         if (prompt2.has_value()) {
-            prompt = ctl::move(prompt2);
+            prompt = std::move(prompt2);
         } else {
-            ctl::optional<ctl::string_view> prompt3 = param("input");
+            std::optional<std::string_view> prompt3 = param("input");
             if (prompt3.has_value()) {
-                prompt = ctl::move(prompt3);
+                prompt = std::move(prompt3);
             }
         }
     }
@@ -105,21 +106,22 @@ Client::get_embedding_params(EmbeddingParams* params)
         if (IsMimeType(HeaderData(kHttpContentType),
                        HeaderLength(kHttpContentType),
                        "text/plain")) {
-            params->prompt = payload;
+            params->prompt = payload_;
         } else if (IsMimeType(HeaderData(kHttpContentType),
                               HeaderLength(kHttpContentType),
                               "application/json")) {
-            ctl::pair<Json::Status, Json> json = Json::parse(payload);
+            std::pair<Json::Status, Json> json =
+              Json::parse(std::string(payload_));
             if (json.first != Json::success)
                 return send_error(400, Json::StatusToString(json.first));
             if (!json.second.isObject())
                 return send_error(400, "JSON body must be an object");
             if (json.second["content"].isString())
-                params->content = ctl::move(json.second["content"].getString());
+                params->content = json.second["content"].getString();
             else if (json.second["prompt"].isString())
-                params->content = ctl::move(json.second["prompt"].getString());
+                params->content = json.second["prompt"].getString();
             else if (json.second["input"].isString())
-                params->content = ctl::move(json.second["input"].getString());
+                params->content = json.second["input"].getString();
             else
                 return send_error(400, "JSON missing content/prompt/input key");
             params->prompt = params->content;
@@ -128,12 +130,12 @@ Client::get_embedding_params(EmbeddingParams* params)
             if (json.second["parse_special"].isBool())
                 params->parse_special = json.second["parse_special"].getBool();
             if (json.second["model"].isString())
-                params->model = ctl::move(json.second["model"].getString());
+                params->model = json.second["model"].getString();
         } else {
             return send_error(501, "Content Type Not Implemented");
         }
     } else {
-        params->prompt = payload;
+        params->prompt = payload_;
     }
     return true;
 }
@@ -141,7 +143,7 @@ Client::get_embedding_params(EmbeddingParams* params)
 bool
 Client::embedding()
 {
-    if (msg.method != kHttpGet && msg.method != kHttpPost)
+    if (msg_.method != kHttpGet && msg_.method != kHttpPost)
         return send_error(405);
 
     if (!read_payload())
@@ -159,9 +161,9 @@ Client::embedding()
     timespec started = timespec_real();
 
     // turn text into tokens
-    auto toks = new ctl::vector<llama_token>(params->prompt.size() + 16);
+    auto toks = new std::vector<llama_token>(params->prompt.size() + 16);
     defer_cleanup(cleanup_token_vector, toks);
-    int count = llama_tokenize(g_model,
+    int count = llama_tokenize(model_,
                                params->prompt.data(),
                                params->prompt.size(),
                                &(*toks)[0],
@@ -178,7 +180,7 @@ Client::embedding()
         return send_error(400, "completely empty prompt disallowed");
 
     // truncate if exceeds model context size
-    const int n_ctx_train = llama_n_ctx_train(g_model);
+    const int n_ctx_train = llama_n_ctx_train(model_);
     if (count > n_ctx_train)
         count = n_ctx_train;
 
@@ -200,7 +202,7 @@ Client::embedding()
     cparams.type_k = GGML_TYPE_F16;
     cparams.type_v = GGML_TYPE_F16;
     cparams.flash_attn = FLAG_flash_attn;
-    llama_context* ctx = llama_new_context_with_model(g_model, cparams);
+    llama_context* ctx = llama_new_context_with_model(model_, cparams);
     if (!ctx) {
         SLOG("llama_new_context_with_model failed");
         return send_error(500);
@@ -208,7 +210,7 @@ Client::embedding()
     defer_cleanup(cleanup_llama_context, ctx);
 
     // initialize batch
-    const int n_embd = llama_n_embd(g_model);
+    const int n_embd = llama_n_embd(model_);
     llama_batch* batch = new llama_batch;
     *batch = llama_batch_init(count, 0, 1);
     defer_cleanup(cleanup_llama_batch, batch);
@@ -220,7 +222,7 @@ Client::embedding()
         SLOG("llama_decode failed");
         return send_error(500);
     }
-    auto embeddings = new ctl::vector<float>(n_embd, 0);
+    auto embeddings = new std::vector<float>(n_embd, 0);
     defer_cleanup(cleanup_float_vector, embeddings);
     for (int i = 0; i < batch->n_tokens; i++) {
         if (!batch->logits[i])
@@ -238,7 +240,7 @@ Client::embedding()
     bool in_openai_mode = path() == "/v1/embeddings";
 
     // serialize tokens to json
-    char* p = obuf.p;
+    char* p = obuf_.p;
     p = stpcpy(p, "{\n");
 
     // Here's what an OpenAI /v1/embedding response looks like:
@@ -308,7 +310,7 @@ Client::embedding()
     if (in_openai_mode)
         p = stpcpy(p, "  }]\n");
     p = stpcpy(p, "}\n");
-    ctl::string_view content(obuf.p, p - obuf.p);
+    std::string_view content(obuf_.p, p - obuf_.p);
 
     // collect statistics
     rusage ruend = {};
@@ -334,3 +336,6 @@ Client::embedding()
     p = stpcpy(p, "\r\n");
     return send_response(headers, p, content);
 }
+
+} // namespace server
+} // namespace lf
