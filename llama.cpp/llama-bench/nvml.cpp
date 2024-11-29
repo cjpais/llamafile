@@ -40,7 +40,9 @@ static struct Nvml {
 } nvml;
 
 bool nvml_init() {
-    // TODO go find the .so or .dll
+    // TODO go find the .so or .dll. This needs to be crossplatform for windows.
+    // We may want some full fallback paths, or exit if failing. Does not need
+    // to kill the implmentation, but we can avoid the power
     void *lib = cosmo_dlopen("libnvidia-ml.so", RTLD_LAZY);
     bool ok = true;
 

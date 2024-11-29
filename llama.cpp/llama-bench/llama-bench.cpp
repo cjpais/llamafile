@@ -24,6 +24,7 @@
 #include <libgen.h>
 #include <pthread.h>
 #include <mutex> // TODO replace with pthreads
+#include <atomic> // TODO similar
 #include <sys/stat.h>
 #include <libc/intrin/x86.h>
 #include "llama.cpp/cores.h"
@@ -2009,7 +2010,7 @@ int main(int argc, char ** argv) {
             pthread_t update_thread;
             int rc = pthread_create(&update_thread, NULL, update_t_gen_column, &argv);
             if (rc) {
-                std::cerr << "Error creating pthread: " << rc << std::endl;
+                fprintf(stderr, "Error creating pthread: %d\n", rc);
                 return EXIT_FAILURE;
             }
             t.run();
@@ -2057,7 +2058,7 @@ int main(int argc, char ** argv) {
         pthread_t update_thread;
         int rc = pthread_create(&update_thread, NULL, update_t_gen_column, &argv);
         if (rc) {
-            std::cerr << "Error creating pthread: " << rc << std::endl;
+            fprintf(stderr, "Error creating pthread: %d\n", rc);
             return EXIT_FAILURE;
         }
         t.run();
