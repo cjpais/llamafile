@@ -41,7 +41,7 @@ static struct Nvml {
 
 bool nvml_init() {
     // TODO go find the .so or .dll
-    void *lib = cosmo_dlopen("/usr/lib/x86_64-linux-gnu/libnvidia-ml.so", RTLD_LAZY);
+    void *lib = cosmo_dlopen("libnvidia-ml.so", RTLD_LAZY);
     bool ok = true;
 
     IMPORT_NVML_FUNCTION(nvmlInit_v2, int (*)(void));
