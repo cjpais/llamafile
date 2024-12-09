@@ -236,7 +236,8 @@ PowerSampler* getPowerSampler(long sample_length_ms) {
         return new ApplePowerSampler(sample_length_ms);
     } else if (llamafile_has_gpu() && FLAG_gpu != LLAMAFILE_GPU_DISABLE) {
         if (llamafile_has_amd_gpu()) {
-            return new AMDPowerSampler(sample_length_ms);
+            // TODO change this to AMD power sampler when it works.
+            return new DummyPowerSampler(sample_length_ms);
         } else if (llamafile_has_cuda()) {
             return new NvidiaPowerSampler(sample_length_ms);
         }

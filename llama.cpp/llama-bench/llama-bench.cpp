@@ -269,10 +269,10 @@ static void get_runtime_info(RuntimeInfo* info) {
     strncpy(info->llamafile_version, LLAMAFILE_VERSION_STRING, MAX_STRING_LENGTH - 1);
     strncpy(info->llama_commit, LLAMA_COMMIT, MAX_STRING_LENGTH - 1);
 
-    // printf("\033[0;35m\n===== llamafile bench runtime information =====\n\n");
-    // printf("%-20s \033[1m%s\033[22m\n", "llamafile version:", info->llamafile_version);
-    // printf("%-20s %s\n", "llama.cpp commit:", info->llama_commit);
-    // printf("\n===============================================\n\n\033[0m");
+    fprintf(stderr, "\033[0;35m\n===== llamafile bench runtime information =====\n\n");
+    fprintf(stderr, "%-20s \033[1m%s\033[22m\n", "llamafile version:", info->llamafile_version);
+    fprintf(stderr, "%-20s %s\n", "llama.cpp commit:", info->llama_commit);
+    fprintf(stderr, "\n===============================================\n\n\033[0m");
 }
 
 static double get_mem_gb() {
@@ -303,14 +303,14 @@ static void get_sys_info(SystemInfo* info) {
 
     info->ram_gb = get_mem_gb();
 
-    // printf("===== system information =====\n\n");
-    // printf("%-20s %s\n", "Kernel Type:", info->kernel_type);
-    // printf("%-20s %s\n", "Kernel Release:", info->kernel_release);
-    // printf("%-20s %s\n", "Version:", info->version);
-    // printf("%-20s %s\n", "System Architecture:", info->system_architecture);
-    // printf("%-20s %s\n", "CPU:", info->cpu);
-    // printf("%-20s %.2f GiB\n", "RAM:", info->ram_gb);
-    // printf("\n===============================\n\n");
+    fprintf(stderr, "===== system information =====\n\n");
+    fprintf(stderr, "%-20s %s\n", "Kernel Type:", info->kernel_type);
+    fprintf(stderr, "%-20s %s\n", "Kernel Release:", info->kernel_release);
+    fprintf(stderr, "%-20s %s\n", "Version:", info->version);
+    fprintf(stderr, "%-20s %s\n", "System Architecture:", info->system_architecture);
+    fprintf(stderr, "%-20s %s\n", "CPU:", info->cpu);
+    fprintf(stderr, "%-20s %.2f GiB\n", "RAM:", info->ram_gb);
+    fprintf(stderr, "\n===============================\n\n");
 }
 
 std::string exec(const char* cmd) {
@@ -343,12 +343,12 @@ static void get_accelerator_info(AcceleratorInfo* info) {
                 info->capability = atof(props.compute);
                 strncpy(info->manufacturer, llamafile_has_amd_gpu() ? "AMD" : "NVIDIA", MAX_STRING_LENGTH - 1);
 
-                // printf("\033[0;32m===== GPU information =====\n\n");
-                // printf("%-26s %s\n", "GPU Name:", info->name);
-                // printf("%-26s %.2f GiB\n", "VRAM:", info->total_memory_gb);
-                // printf("%-26s %d\n", "Streaming Multiprocessors:", info->core_count);
-                // printf("%-26s %.1f\n", "CUDA Capability:", info->capability);
-                // printf("\n============================\n\n\033[0m");
+                fprintf(stderr, "\033[0;32m===== GPU information =====\n\n");
+                fprintf(stderr, "%-26s %s\n", "GPU Name:", info->name);
+                fprintf(stderr, "%-26s %.2f GiB\n", "VRAM:", info->total_memory_gb);
+                fprintf(stderr, "%-26s %d\n", "Streaming Multiprocessors:", info->core_count);
+                fprintf(stderr, "%-26s %.1f\n", "CUDA Capability:", info->capability);
+                fprintf(stderr, "\n============================\n\n\033[0m");
             }
         }
 
@@ -378,14 +378,14 @@ static void get_accelerator_info(AcceleratorInfo* info) {
             info->capability = props.metal_version;
             strncpy(info->manufacturer, "Apple", MAX_STRING_LENGTH - 1);
 
-            // printf("\033[0;32m===== GPU information =====\n\n");
-            // printf("%-26s %s\n", "GPU Name:", props.name);
-            // printf("%-26s %.2f GiB\n", "VRAM:", props.memory);
-            // printf("%-26s %d\n", "Core Count:", props.core_count);
-            // printf("%-26s %d\n", "Metal Version:", props.metal_version);
-            // printf("%-26s %d\n", "GPU Family:", props.gpu_family);
-            // printf("%-26s %d\n", "Common GPU Family:", props.gpu_family_common);
-            // printf("\n============================\n\n\033[0m");
+            fprintf(stderr, "\033[0;32m===== GPU information =====\n\n");
+            fprintf(stderr, "%-26s %s\n", "GPU Name:", props.name);
+            fprintf(stderr, "%-26s %.2f GiB\n", "VRAM:", props.memory);
+            fprintf(stderr, "%-26s %d\n", "Core Count:", props.core_count);
+            fprintf(stderr, "%-26s %d\n", "Metal Version:", props.metal_version);
+            fprintf(stderr, "%-26s %d\n", "GPU Family:", props.gpu_family);
+            fprintf(stderr, "%-26s %d\n", "Common GPU Family:", props.gpu_family_common);
+            fprintf(stderr, "\n============================\n\n\033[0m");
         }
     } else {
         #ifdef __x86_64__
@@ -1916,15 +1916,14 @@ int main(int argc, char ** argv) {
     cmd_params params = parse_cmd_params(argc, argv);
     FLAGS_READY = true;
 
-    AcceleratorInfo accelerator_info;
-    get_accelerator_info(&accelerator_info);
-
     RuntimeInfo runtime_info;
     get_runtime_info(&runtime_info);
 
     SystemInfo sys_info;
     get_sys_info(&sys_info);
 
+    AcceleratorInfo accelerator_info;
+    get_accelerator_info(&accelerator_info);
 
     // initialize llama.cpp
     if (!params.verbose) {
