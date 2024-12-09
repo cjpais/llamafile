@@ -22,6 +22,7 @@ const DEFAULT_SYSTEM_PROMPT =
 const DEFAULT_FLAGZ = {
   "model": null,
   "prompt": null,
+  "nologo": false,
   "no_display_prompt": false,
   "frequency_penalty": 0,
   "presence_penalty": 0,
@@ -46,6 +47,8 @@ const completionsInput = document.getElementById("completions-input");
 const completeButton = document.getElementById("complete-button");
 const completionsSettingsButton = document.getElementById("completions-settings-button");
 const completionsStopButton = document.getElementById("completions-stop-button");
+const uploadButton = document.getElementById("upload-button");
+const fileUpload = document.getElementById("file-upload");
 
 let abortController = null;
 let disableAutoScroll = false;
@@ -307,19 +310,26 @@ async function fixImageDataUri(dataUri, maxLength = 1024 * 1024) {
 }
 
 async function onFile(file) {
-  if (!file.type.toLowerCase().startsWith('image/')) {
-    console.warn('Only image files are supported');
+  const reader = new FileReader();
+  if (file.type.toLowerCase().startsWith('image/')) {
+    reader.onloadend = async function() {
+      const description = file.name;
+      const realDataUri = await fixImageDataUri(reader.result);
+      const fakeDataUri = 'data:,placeholder/' + generateId();
+      uploadedFiles.push([fakeDataUri, realDataUri]);
+      insertText(chatInput, `![${description}](${fakeDataUri})`);
+    };
+    reader.readAsDataURL(file);
+  } else if (file.type.toLowerCase().startsWith('text/')) {
+    reader.onloadend = function() {
+      const content = reader.result;
+      insertText(chatInput, `\`\`\`\n${content}\n\`\`\``);
+    };
+    reader.readAsText(file);
+  } else {
+    console.warn('Only image and text files are supported');
     return;
   }
-  const reader = new FileReader();
-  reader.onloadend = async function() {
-    const description = file.name;
-    const realDataUri = await fixImageDataUri(reader.result);
-    const fakeDataUri = 'data:,placeholder/' + generateId();
-    uploadedFiles.push([fakeDataUri, realDataUri]);
-    insertText(chatInput, `![${description}](${fakeDataUri})`);
-  };
-  reader.readAsDataURL(file);
 }
 
 function insertText(elem, text) {
@@ -368,6 +378,9 @@ function updateModelInfo() {
     document.title = `${modelName} - llamafile`;
     document.getElementById("model").textContent = modelName;
     document.getElementById("model-completions").textContent = modelName;
+  }
+  if (!flagz.nologo) {
+    document.getElementById("logo").style.display = "inline-block";
   }
 }
 
@@ -672,6 +685,17 @@ async function chatbot() {
   document.addEventListener("drop", onDragEnd);
   document.addEventListener("drop", onDrop);
   document.addEventListener("paste", onPaste);
+
+  uploadButton.addEventListener("click", () => {
+    fileUpload.click();
+  });
+
+  fileUpload.addEventListener("change", (e) => {
+    if (e.target.files[0]) {
+      onFile(e.target.files[0]);
+      e.target.value = '';
+    }
+  });
 }
 
 chatbot();

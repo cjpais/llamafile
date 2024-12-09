@@ -85,6 +85,7 @@ struct Client
     bool read_content() __wur;
     bool send_continue() __wur;
     bool send(const std::string_view) __wur;
+    bool send_binary(const void*, size_t) __wur;
     void defer_cleanup(void (*)(void*), void*);
     bool send_error(int, const char* = nullptr);
     char* append_http_response_message(char*, int, const char* = nullptr);
@@ -118,6 +119,10 @@ struct Client
 
     bool slotz() __wur;
     bool flagz() __wur;
+    bool db_chat(int64_t) __wur;
+    bool db_chats() __wur;
+    bool db_message(int64_t) __wur;
+    bool db_messages(int64_t) __wur;
 };
 
 } // namespace server

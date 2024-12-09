@@ -54,6 +54,8 @@ bool FLAG_trace = false;
 bool FLAG_unsecure = false;
 const char *FLAG_chat_template = "";
 const char *FLAG_db = nullptr;
+const char *FLAG_db_startup_sql = "PRAGMA journal_mode=WAL;"
+                                  "PRAGMA synchronous=NORMAL;";
 const char *FLAG_file = nullptr;
 const char *FLAG_ip_header = nullptr;
 const char *FLAG_listen = "127.0.0.1:8080";
@@ -186,10 +188,24 @@ void llamafile_get_flags(int argc, char **argv) {
             continue;
         }
 
+        if (!strcmp(flag, "--prompt") || !strcmp(flag, "--system-prompt")) {
+            if (i == argc)
+                missing("--prompt");
+            FLAG_prompt = argv[i++];
+            continue;
+        }
+
         if (!strcmp(flag, "--db")) {
             if (i == argc)
                 missing("--db");
             FLAG_db = argv[i++];
+            continue;
+        }
+
+        if (!strcmp(flag, "--db-startup-sql")) {
+            if (i == argc)
+                missing("--db-startup-sql");
+            FLAG_db_startup_sql = argv[i++];
             continue;
         }
 

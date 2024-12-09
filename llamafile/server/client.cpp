@@ -24,6 +24,7 @@
 #include "llamafile/server/server.h"
 #include "llamafile/server/time.h"
 #include "llamafile/server/tokenbucket.h"
+#include "llamafile/server/utils.h"
 #include "llamafile/server/worker.h"
 #include "llamafile/string.h"
 #include "llamafile/threadlocal.h"
@@ -47,6 +48,19 @@
 
 namespace lf {
 namespace server {
+
+static int64_t
+atoi(std::string_view s)
+{
+    int64_t n = 0;
+    for (char c : s) {
+        if (c < '0' || c > '9')
+            return -1;
+        n *= 10;
+        n += c - '0';
+    }
+    return n;
+}
 
 static void
 on_http_cancel(Client* client)
@@ -465,7 +479,7 @@ Client::send_response_chunk(const std::string_view content)
 
     // perform send system call
     ssize_t sent;
-    if ((sent = writev(fd_, iov, 3)) != bytes) {
+    if ((sent = safe_writev(fd_, iov, 3)) != bytes) {
         if (sent == -1 && errno != EAGAIN && errno != ECONNRESET)
             SLOG("writev failed %m");
         close_connection_ = true;
@@ -491,15 +505,14 @@ Client::send_response_finish()
     return send("0\r\n\r\n");
 }
 
-// writes raw data to socket
+// writes any old data to socket
 //
-// consider using the higher level methods like send_error(),
-// send_response(), send_response_start(), etc.
+// unlike send() this won't fail if binary content is detected.
 bool
-Client::send(const std::string_view s)
+Client::send_binary(const void* p, size_t n)
 {
     ssize_t sent;
-    if ((sent = write(fd_, s.data(), s.size())) != s.size()) {
+    if ((sent = write(fd_, p, n)) != n) {
         if (sent == -1 && errno != EAGAIN && errno != ECONNRESET)
             SLOG("write failed %m");
         close_connection_ = true;
@@ -508,7 +521,27 @@ Client::send(const std::string_view s)
     return true;
 }
 
-// writes two pieces of raw data to socket in single system call
+// writes non-binary data to socket
+//
+// consider using the higher level methods like send_error(),
+// send_response(), send_response_start(), etc.
+bool
+Client::send(const std::string_view s)
+{
+    iovec iov[1];
+    ssize_t sent;
+    iov[0].iov_base = (void*)s.data();
+    iov[0].iov_len = s.size();
+    if ((sent = safe_writev(fd_, iov, 1)) != s.size()) {
+        if (sent == -1 && errno != EAGAIN && errno != ECONNRESET)
+            SLOG("write failed %m");
+        close_connection_ = true;
+        return false;
+    }
+    return true;
+}
+
+// writes two pieces of non-binary data to socket in single system call
 //
 // consider using the higher level methods like send_error(),
 // send_response(), send_response_start(), etc.
@@ -521,7 +554,7 @@ Client::send2(const std::string_view s1, const std::string_view s2)
     iov[0].iov_len = s1.size();
     iov[1].iov_base = (void*)s2.data();
     iov[1].iov_len = s2.size();
-    if ((sent = writev(fd_, iov, 2)) != s1.size() + s2.size()) {
+    if ((sent = safe_writev(fd_, iov, 2)) != s1.size() + s2.size()) {
         if (sent == -1 && errno != EAGAIN && errno != ECONNRESET)
             SLOG("writev failed %m");
         close_connection_ = true;
@@ -659,6 +692,24 @@ Client::dispatcher()
     if (p1 == "flagz")
         return flagz();
 
+    if (p1 == "db/chats" || p1 == "db/chats/")
+        return db_chats();
+    if (p1.starts_with("db/chat/")) {
+        int64_t id = atoi(p1.substr(strlen("db/chat/")));
+        if (id != -1)
+            return db_chat(id);
+    }
+    if (p1.starts_with("db/messages/")) {
+        int64_t id = atoi(p1.substr(strlen("db/messages/")));
+        if (id != -1)
+            return db_messages(id);
+    }
+    if (p1.starts_with("db/message/")) {
+        int64_t id = atoi(p1.substr(strlen("db/message/")));
+        if (id != -1)
+            return db_messages(id);
+    }
+
     // serve static endpoints
     int infd;
     size_t size;
@@ -724,7 +775,7 @@ Client::dispatcher()
             close_connection_ = true;
             return false;
         }
-        if (!send(std::string_view(buf, chunk))) {
+        if (!send_binary(buf, chunk)) {
             close_connection_ = true;
             return false;
         }
