@@ -17,6 +17,7 @@
 #include <numeric>
 #include <regex>
 #include <sstream>
+#include <iostream>
 #include <string>
 #include <vector>
 #include <cosmo.h>
@@ -34,15 +35,21 @@
 #include <sys/sysinfo.h>
 #include <unistd.h>
 
+#include "http.h"
+#include "powersampler.h"
+
 #include "llama.cpp/ggml.h"
 #include "llama.cpp/ggml-metal.h"
 #include "llama.cpp/llama.h"
 #include "llama.cpp/string.h"
 #include "llama.cpp/common.h"
 #include "llama.cpp/ggml-cuda.h"
+
 #include "llamafile/llamafile.h"
 #include "llamafile/compute.h"
-#include "powersampler.h"
+#include "llamafile/json.h"
+
+using jt::Json;
 
 // utils
 static uint64_t get_time_ns() {
@@ -454,6 +461,7 @@ struct cmd_params {
     ggml_numa_strategy numa;
     int reps;
     bool verbose;
+    bool send_results;
     output_formats output_format;
 };
 
@@ -478,7 +486,8 @@ static const cmd_params cmd_params_defaults = {
     /* numa          */ GGML_NUMA_STRATEGY_DISABLED,
     /* reps          */ 4,
     /* verbose       */ false,
-    /* output_format */ MARKDOWN
+    /* send_results  */ false,
+    /* output_format */ MARKDOWN,
 };
 
 static void print_usage(int /* argc */, char ** argv) {
@@ -507,6 +516,7 @@ static void print_usage(int /* argc */, char ** argv) {
     printf("  -r, --repetitions <n>               (default: %d)\n", cmd_params_defaults.reps);
     printf("  -o, --output <csv|json|md|sql>      (default: %s)\n", output_format_str(cmd_params_defaults.output_format));
     printf("  -v, --verbose                       (default: %s)\n", cmd_params_defaults.verbose ? "1" : "0");
+    printf("  -y, --send-results                  (default: %s)\n", cmd_params_defaults.send_results ? "1" : "0");
     printf("\n");
     printf("Multiple values can be given for each parameter by separating them with ',' or by specifying the parameter multiple times.\n");
 }
@@ -546,6 +556,7 @@ static cmd_params parse_cmd_params(int argc, char ** argv) {
     const char split_delim = ',';
 
     params.verbose = cmd_params_defaults.verbose;
+    params.send_results = cmd_params_defaults.send_results;
     params.output_format = cmd_params_defaults.output_format;
     params.reps = cmd_params_defaults.reps;
 
@@ -767,6 +778,8 @@ static cmd_params parse_cmd_params(int argc, char ** argv) {
             }
         } else if (arg == "-v" || arg == "--verbose") {
             params.verbose = true;
+        } else if (arg == "-y" || arg == "--send-results") {
+            params.send_results = true;
         } else if (arg[0] == '-') {
             invalid_param = true;
             break;
@@ -1410,10 +1423,59 @@ const bool        test::sycl         = false; // !!ggml_cpu_has_sycl(); // [jart
 const std::string test::cpu_info     = llamafile_describe_cpu();
 const std::string test::gpu_info     = ""; //get_gpu_info(); // [jart]
 
+struct OutputWriter {
+    virtual ~OutputWriter() {};
+    virtual void write(const char* buf, ...) = 0;
+    virtual void flush() = 0;
+};
+
+struct FileWriter : public OutputWriter {
+    FILE* fout;
+
+    FileWriter(FILE* f): fout(f) {}
+
+    void write(const char* format, ...) override {
+        va_list args;
+        va_start(args, format);
+        vfprintf(fout, format, args);
+        va_end(args);
+    }
+    
+    void flush() override {
+        fflush(fout);
+    }
+};
+
+struct StringWriter : public OutputWriter {
+    std::string& output;
+
+    StringWriter(std::string& str) : output(str) {}
+
+    void write(const char* format, ...) override {
+        va_list args;
+        va_start(args, format);
+        char tmp[1024];
+        vsnprintf(tmp, sizeof(tmp), format, args);
+        output += tmp;
+        va_end(args);
+    }
+
+    void flush() override {}
+};
+
 struct printer {
     virtual ~printer() {}
 
-    FILE * fout;
+    std::unique_ptr<OutputWriter> writer;
+    
+    void set_file_output(FILE* fout) {
+        writer = std::make_unique<FileWriter>(fout);
+    }
+    
+    void set_string_output(std::string& output) {
+        writer = std::make_unique<StringWriter>(output);
+    }
+
     virtual void print_header(const cmd_params & params, AcceleratorInfo accelerator_info, RuntimeInfo runtime_info, SystemInfo sys_info) { (void) params; }
     virtual void print_test(const test & t) = 0;
     virtual void print_footer() { }
@@ -1434,14 +1496,14 @@ struct csv_printer : public printer {
 
     void print_header(const cmd_params & params, AcceleratorInfo accelerator_info, RuntimeInfo runtime_info, SystemInfo sys_info) override  {
         std::vector<std::string> fields = test::get_fields();
-        fprintf(fout, "%s\n", join(fields, ",").c_str());
+        writer->write("%s\n", join(fields, ",").c_str());
         (void) params;
     }
 
     void print_test(const test & t) override {
         std::vector<std::string> values = t.get_values();
         std::transform(values.begin(), values.end(), values.begin(), escape_csv);
-        fprintf(fout, "%s\n", join(values, ",").c_str());
+        writer->write("%s\n", join(values, ",").c_str());
     }
 };
 
@@ -1478,36 +1540,36 @@ struct json_printer : public printer {
     }
 
 void print_header(const cmd_params & params, AcceleratorInfo gpu_info, RuntimeInfo runtime_info, SystemInfo sys_info) override {
-    fprintf(fout, "{\n");
+    writer->write("{\n");
     
     // Print RuntimeInfo object
-    fprintf(fout, "  \"runtime_info\": {\n");
-    fprintf(fout, "    \"name\": \"%s\",\n", "llamafile");
-    fprintf(fout, "    \"version\": \"%s\",\n", runtime_info.llamafile_version);
-    fprintf(fout, "    \"commit\": \"%s\"\n", runtime_info.llama_commit);
-    fprintf(fout, "  },\n");
+    writer->write("  \"runtime_info\": {\n");
+    writer->write("    \"name\": \"%s\",\n", "llamafile");
+    writer->write("    \"version\": \"%s\",\n", runtime_info.llamafile_version);
+    writer->write("    \"commit\": \"%s\"\n", runtime_info.llama_commit);
+    writer->write("  },\n");
 
     // Print SystemInfo object
-    fprintf(fout, "  \"system_info\": {\n");
-    fprintf(fout, "    \"cpu_name\": \"%s\",\n", sys_info.cpu);
-    fprintf(fout, "    \"cpu_arch\": \"%s\",\n", sys_info.system_architecture);
-    fprintf(fout, "    \"ram_gb\": %.2f,\n", sys_info.ram_gb);
-    fprintf(fout, "    \"kernel_type\": \"%s\",\n", sys_info.kernel_type);
-    fprintf(fout, "    \"kernel_release\": \"%s\",\n", sys_info.kernel_release);
-    fprintf(fout, "    \"version\": \"%s\"\n", sys_info.version);
-    fprintf(fout, "  },\n");
+    writer->write("  \"system_info\": {\n");
+    writer->write("    \"cpu_name\": \"%s\",\n", sys_info.cpu);
+    writer->write("    \"cpu_arch\": \"%s\",\n", sys_info.system_architecture);
+    writer->write("    \"ram_gb\": %.2f,\n", sys_info.ram_gb);
+    writer->write("    \"kernel_type\": \"%s\",\n", sys_info.kernel_type);
+    writer->write("    \"kernel_release\": \"%s\",\n", sys_info.kernel_release);
+    writer->write("    \"version\": \"%s\"\n", sys_info.version);
+    writer->write("  },\n");
 
     // Print GPUInfo object
-    fprintf(fout, "  \"accelerator_info\": {\n");
-    fprintf(fout, "    \"name\": \"%s\",\n", gpu_info.name);
-    fprintf(fout, "    \"manufacturer\": \"%s\",\n", gpu_info.manufacturer);
-    fprintf(fout, "    \"memory_gb\": %.2f,\n", gpu_info.total_memory_gb);
+    writer->write("  \"accelerator_info\": {\n");
+    writer->write("    \"name\": \"%s\",\n", gpu_info.name);
+    writer->write("    \"manufacturer\": \"%s\",\n", gpu_info.manufacturer);
+    writer->write("    \"memory_gb\": %.2f,\n", gpu_info.total_memory_gb);
     // TODO
-    fprintf(fout, "    \"type\": \"%s\"\n", (FLAG_gpu >= 0 && llamafile_has_gpu()) ? "GPU" : "CPU");
-    fprintf(fout, "  },\n");
+    writer->write("    \"type\": \"%s\"\n", (FLAG_gpu >= 0 && llamafile_has_gpu()) ? "GPU" : "CPU");
+    writer->write("  },\n");
 
     // Start the results array
-    fprintf(fout, "  \"results\": [\n");
+    writer->write("  \"results\": [\n");
     
     (void) params;
 }
@@ -1515,7 +1577,7 @@ void print_header(const cmd_params & params, AcceleratorInfo gpu_info, RuntimeIn
     void print_fields(const std::vector<std::string> & fields, const std::vector<std::string> & values) {
         assert(fields.size() == values.size());
         for (size_t i = 0; i < fields.size(); i++) {
-            fprintf(fout, "      \"%s\": %s,\n", fields.at(i).c_str(), format_value(fields.at(i), values.at(i)).c_str());
+            writer->write("      \"%s\": %s,\n", fields.at(i).c_str(), format_value(fields.at(i), values.at(i)).c_str());
         }
     }
 
@@ -1523,19 +1585,19 @@ void print_header(const cmd_params & params, AcceleratorInfo gpu_info, RuntimeIn
         if (first) {
             first = false;
         } else {
-            fprintf(fout, ",\n");
+            writer->write(",\n");
         }
-        fprintf(fout, "    {\n");
+        writer->write("    {\n");
         print_fields(test::get_fields(), t.get_values());
-        fprintf(fout, "      \"samples_ns\": [ %s ],\n", join(t.get_samples_ns(), ", ").c_str());
-        fprintf(fout, "      \"samples_ts\": [ %s ]\n", join(t.get_ts(), ", ").c_str());
-        fprintf(fout, "    }");
-        fflush(fout);
+        writer->write("      \"samples_ns\": [ %s ],\n", join(t.get_samples_ns(), ", ").c_str());
+        writer->write("      \"samples_ts\": [ %s ]\n", join(t.get_ts(), ", ").c_str());
+        writer->write("    }");
+        writer->flush();
     }
 
     void print_footer() override {
-        fprintf(fout, "\n  ]\n");
-        fprintf(fout, "}");
+        writer->write("\n  ]\n");
+        writer->write("}");
     }
 };
 
@@ -1671,17 +1733,17 @@ struct markdown_printer : public printer {
         fields.emplace_back("tg t/s/watt");
         fields.emplace_back("ttft");
 
-        fprintf(fout, "|");
+        writer->write("|");
         for (const auto & field : fields) {
-            fprintf(fout, " %*s |", get_field_width(field), get_field_display_name(field).c_str());
+            writer->write(" %*s |", get_field_width(field), get_field_display_name(field).c_str());
         }
-        fprintf(fout, "\n");
-        fprintf(fout, "|");
+        writer->write("\n");
+        writer->write("|");
         for (const auto & field : fields) {
             int width = get_field_width(field);
-            fprintf(fout, " %s%s |", std::string(std::abs(width) - 1, '-').c_str(), width > 0 ? ":" : "-");
+            writer->write(" %s%s |", std::string(std::abs(width) - 1, '-').c_str(), width > 0 ? ":" : "-");
         }
-        fprintf(fout, "\n");
+        writer->write("\n");
     }
 
     void print_test(const test & t) override {
@@ -1689,7 +1751,7 @@ struct markdown_printer : public printer {
 
         float power = t.get_power();
 
-        fprintf(fout, "|");
+        writer->write("|");
         for (const auto & field : fields) {
             std::string value;
             char buf[128];
@@ -1787,13 +1849,13 @@ struct markdown_printer : public printer {
             //     // HACK: the utf-8 character is 2 bytes
             //     width += 1;
             // }
-            fprintf(fout, " %*s |", width, value.c_str());
+            writer->write(" %*s |", width, value.c_str());
         }
-        fprintf(fout, "\n");
+        writer->write("\n");
     }
 
     void print_footer() override {
-        // fprintf(fout, "\nbuild: %s (%d)\n", test::build_commit.c_str(), test::build_number); // [jart]
+        // writer->write("\nbuild: %s (%d)\n", test::build_commit.c_str(), test::build_number); // [jart]
     }
 };
 
@@ -1815,23 +1877,23 @@ struct sql_printer : public printer {
 
     void print_header(const cmd_params & params, AcceleratorInfo gpu_info, RuntimeInfo runtime_info, SystemInfo sys_info) override {
         std::vector<std::string> fields = test::get_fields();
-        fprintf(fout, "CREATE TABLE IF NOT EXISTS test (\n");
+        writer->write("CREATE TABLE IF NOT EXISTS test (\n");
         for (size_t i = 0; i < fields.size(); i++) {
-            fprintf(fout, "  %s %s%s\n", fields.at(i).c_str(), get_sql_field_type(fields.at(i)).c_str(),  i < fields.size() - 1 ? "," : "");
+            writer->write("  %s %s%s\n", fields.at(i).c_str(), get_sql_field_type(fields.at(i)).c_str(),  i < fields.size() - 1 ? "," : "");
         }
-        fprintf(fout, ");\n");
-        fprintf(fout, "\n");
+        writer->write(");\n");
+        writer->write("\n");
         (void) params;
     }
 
     void print_test(const test & t) override {
-        fprintf(fout, "INSERT INTO test (%s) ", join(test::get_fields(), ", ").c_str());
-        fprintf(fout, "VALUES (");
+        writer->write("INSERT INTO test (%s) ", join(test::get_fields(), ", ").c_str());
+        writer->write("VALUES (");
         std::vector<std::string> values = t.get_values();
         for (size_t i = 0; i < values.size(); i++) {
-            fprintf(fout, "'%s'%s", values.at(i).c_str(), i < values.size() - 1 ? ", " : "");
+            writer->write("'%s'%s", values.at(i).c_str(), i < values.size() - 1 ? ", " : "");
         }
-        fprintf(fout, ");\n");
+        writer->write(");\n");
     }
 };
 
@@ -1890,6 +1952,16 @@ void* update_t_gen_column(void* args) {
     return nullptr;
 }
 
+std::string getUserConfirmation() {
+    std::string user_input;
+    printf("\nDo you want to send the data to the public database? (yes/no): ");
+    std::getline(std::cin, user_input);
+    
+    // Convert to lowercase for case-insensitive comparison
+    std::transform(user_input.begin(), user_input.end(), user_input.begin(), ::tolower);
+    return user_input;
+}
+
 __attribute__((__constructor__(101))) static void init(void) {
     FLAG_gpu = LLAMAFILE_GPU_DISABLE; // [jart]
 }
@@ -1933,6 +2005,11 @@ int main(int argc, char ** argv) {
     llama_backend_init();
     llama_numa_init(params.numa);
 
+    std::string req_payload;
+    json_printer* req_printer = new json_printer();
+    req_printer->set_string_output(req_payload);
+    req_printer->print_header(params, accelerator_info, runtime_info, sys_info);
+
     // initialize printer
     std::unique_ptr<printer> p;
     switch (params.output_format) {
@@ -1952,7 +2029,7 @@ int main(int argc, char ** argv) {
             assert(false);
             exit(1);
     }
-    p->fout = stdout;
+    p->set_file_output(stdout);
     p->print_header(params, accelerator_info, runtime_info, sys_info);
 
     std::vector<cmd_params_instance> params_instances = get_cmd_params_instances(params);
@@ -1964,63 +2041,63 @@ int main(int argc, char ** argv) {
 
     pthread_t print_thread;
 
-    for (const auto & base_inst : params_instances) {
-        int num_gen = base_inst.n_prompt > 0 ? 4096: 2048;
-        for (int context_size = 16; context_size <= num_gen; context_size *= 2) {
-            // TODO this is a total hack.
-            cmd_params_instance inst = base_inst;
-            if (base_inst.n_prompt > 0) {
-                inst.n_prompt = context_size;
-            } else {
-                inst.n_gen = context_size;
-            }
+    // for (const auto & base_inst : params_instances) {
+    //     int num_gen = base_inst.n_prompt > 0 ? 4096: 2048;
+    //     for (int context_size = 16; context_size <= num_gen; context_size *= 2) {
+    //         // TODO this is a total hack.
+    //         cmd_params_instance inst = base_inst;
+    //         if (base_inst.n_prompt > 0) {
+    //             inst.n_prompt = context_size;
+    //         } else {
+    //             inst.n_gen = context_size;
+    //         }
 
-            // keep the same model between tests when possible
-            if (!lmodel || !prev_inst || !inst.equal_mparams(*prev_inst)) {
-                if (lmodel) {
-                    llama_free_model(lmodel);
-                }
+    //         // keep the same model between tests when possible
+    //         if (!lmodel || !prev_inst || !inst.equal_mparams(*prev_inst)) {
+    //             if (lmodel) {
+    //                 llama_free_model(lmodel);
+    //             }
 
-                lmodel = llama_load_model_from_file(inst.model.c_str(), inst.to_llama_mparams());
-                if (lmodel == NULL) {
-                    fprintf(stderr, "%s: error: failed to load model '%s'\n", __func__, inst.model.c_str());
-                    return 1;
-                }
+    //             lmodel = llama_load_model_from_file(inst.model.c_str(), inst.to_llama_mparams());
+    //             if (lmodel == NULL) {
+    //                 fprintf(stderr, "%s: error: failed to load model '%s'\n", __func__, inst.model.c_str());
+    //                 return 1;
+    //             }
 
-                // TODO build a json payload still..
-                // printf("Model N Params: %d\n", llama_model_n_params(lmodel));
+    //             // TODO build a json payload still..
+    //             // printf("Model N Params: %d\n", llama_model_n_params(lmodel));
 
-                prev_inst = &inst;
-            }
+    //             prev_inst = &inst;
+    //         }
 
-            llama_context_params cparams = inst.to_llama_cparams();
-            cparams.n_ctx = context_size;
+    //         llama_context_params cparams = inst.to_llama_cparams();
+    //         cparams.n_ctx = context_size;
 
-            llama_context * ctx = llama_new_context_with_model(lmodel, cparams);
-            if (ctx == NULL) {
-                fprintf(stderr, "%s: error: failed to create context with model '%s'\n", __func__, inst.model.c_str());
-                llama_free_model(lmodel);
-                return 1;
-            }
+    //         llama_context * ctx = llama_new_context_with_model(lmodel, cparams);
+    //         if (ctx == NULL) {
+    //             fprintf(stderr, "%s: error: failed to create context with model '%s'\n", __func__, inst.model.c_str());
+    //             llama_free_model(lmodel);
+    //             return 1;
+    //         }
 
-            test t(inst, lmodel, ctx, params.reps, sampler);
+    //         test t(inst, lmodel, ctx, params.reps, sampler);
 
-            update_t_gen_column_args argv = {t, p.get()};
-            pthread_t update_thread;
-            int rc = pthread_create(&update_thread, NULL, update_t_gen_column, &argv);
-            if (rc) {
-                fprintf(stderr, "Error creating pthread: %d\n", rc);
-                return EXIT_FAILURE;
-            }
-            t.run();
+    //         update_t_gen_column_args argv = {t, p.get()};
+    //         pthread_t update_thread;
+    //         int rc = pthread_create(&update_thread, NULL, update_t_gen_column, &argv);
+    //         if (rc) {
+    //             fprintf(stderr, "Error creating pthread: %d\n", rc);
+    //             return EXIT_FAILURE;
+    //         }
+    //         t.run();
 
-            pthread_join(update_thread, NULL);
+    //         pthread_join(update_thread, NULL);
 
-            llama_print_timings(ctx);
+    //         llama_print_timings(ctx);
 
-            llama_free(ctx);
-        }
-    }
+    //         llama_free(ctx);
+    //     }
+    // }
 
     for (const auto & test_cfg : baseline_tests) {
         cmd_params_instance inst = params_instances.front();
@@ -2063,6 +2140,7 @@ int main(int argc, char ** argv) {
         t.run();
 
         pthread_join(update_thread, NULL);
+        req_printer->print_test(t);
 
         llama_print_timings(ctx);
 
@@ -2072,8 +2150,43 @@ int main(int argc, char ** argv) {
     llama_free_model(lmodel);
 
     p->print_footer();
+    req_printer->print_footer();
 
     llama_backend_free();
+
+    // Ask user for confirmation before sending the data
+    std::string user_cnf;
+    if (!params.send_results) {
+        user_cnf = getUserConfirmation();
+    }
+
+    if (user_cnf == "yes" || user_cnf == "y" || params.send_results) {
+        printf("\nSending data to the public database...\n");
+        Response response = POST("https://test.com", req_payload, {});
+
+        if (response.status == 200) {
+            printf("Data sent to the public database.\n");
+
+            // parse the response json
+            std::pair<Json::Status, Json> json =
+              Json::parse(response.body);
+
+            if (json.first != Json::success) {
+                printf("Error parsing response json\n");
+                return 1;
+            }
+            if (!json.second.isObject()) {
+                printf("Response json is not an object\n");
+                return 1;
+            }
+
+            if (json.second["id"].isString()) {
+                printf("Result Link: https://llamascore.vercel.app/result/%s\n", json.second["id"].getString().c_str());
+            }
+        }
+    } else {
+        printf("\nData not sent to the public database.\n");
+    }
 
     return 0;
 }

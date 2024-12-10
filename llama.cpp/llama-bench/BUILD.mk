@@ -14,7 +14,8 @@ o/$(MODE)/llama.cpp/llama-bench/llama-bench.a:				\
 o/$(MODE)/llama.cpp/llama-bench/llama-bench:				\
 		o/$(MODE)/llama.cpp/llama-bench/llama-bench.a		\
 		o/$(MODE)/llama.cpp/llama-bench/llama-bench.o		\
-		o/$(MODE)/llama.cpp/llama.cpp.a
+		o/$(MODE)/llama.cpp/llama.cpp.a						\
+		o/$(MODE)/third_party/mbedtls/mbedtls.a				\
 
 $(LLAMA_CPP_LLAMA_BENCH_OBJS): llama.cpp/llama-bench/BUILD.mk
 
