@@ -23,7 +23,11 @@ void PowerSampler::start() {
         samples_.clear();
         sampling_start_time_ = timespec_real();
         energy_consumed_start_ = getEnergyConsumed();
-        pthread_create(&sampling_thread_, nullptr, sampling_thread_func, this);
+
+        pthread_attr_t attr;
+        pthread_attr_init(&attr);
+        pthread_attr_setstacksize(&attr, 1*1024*1024); // set the stack size to 1MB
+        pthread_create(&sampling_thread_, &attr, sampling_thread_func, this);
     }
 }
 
@@ -123,7 +127,7 @@ power_sample_t NvidiaPowerSampler::sample() {
     power_sample_t sample;
     unsigned int mw;
 
-    if (nvml_get_memory_usage(device_, &sample.vram)) { }
+    // if (nvml_get_memory_usage(device_, &sample.vram)) { }
     if (!nvml_get_power_usage(device_, &mw)) {
         // TODO return a bool instead? error?
     }
