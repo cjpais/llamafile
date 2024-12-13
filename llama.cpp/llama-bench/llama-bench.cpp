@@ -1331,7 +1331,8 @@ struct test {
             "avg_time_ms", "stddev_time_ms",
             "prompt_tps", "prompt_tps_watt", "prompt_tps_stddev",
             "gen_tps", "gen_tps_watt", "gen_tps_stddev",
-            "name", "power_watts", "vram_used_mb", "ttft_ms"
+            // "name", "power_watts", "vram_used_mb", "ttft_ms"
+            "name", "power_watts", "ttft_ms"
         };
         return fields;
     }
@@ -1395,7 +1396,8 @@ struct test {
             std::to_string(avg_ns() / 1e6), std::to_string(stdev_ns() / 1e6),
             std::to_string(avg_ts(PROMPT_TPS)), std::to_string(get_tps_watt(PROMPT_TPS)), std::to_string(stdev_ts(PROMPT_TPS)),
             std::to_string(avg_ts(GEN_TPS)), std::to_string(get_tps_watt(GEN_TPS)), std::to_string(stdev_ts(GEN_TPS)),
-            name, std::to_string(power), std::to_string(monitor_result.vram), std::to_string(ttft() / 1e6)
+            // name, std::to_string(power), std::to_string(monitor_result.vram), std::to_string(ttft() / 1e6)
+            name, std::to_string(power), std::to_string(ttft() / 1e6)
         };
         return values;
     }
@@ -1631,9 +1633,9 @@ struct markdown_printer : public printer {
         if (field == "test") {
             return 13;
         }
-        if (field == "vram") {
-            return 15;
-        }
+        // if (field == "vram") {
+        //     return 15;
+        // }
 
         int width = std::max((int)field.length(), 10);
 
@@ -1685,7 +1687,7 @@ struct markdown_printer : public printer {
         // fields.emplace_back("backend"); // [jart]
         fields.emplace_back("avg time"); // [jart]
         fields.emplace_back("power");
-        fields.emplace_back("vram");
+        // fields.emplace_back("vram");
         bool is_cpu_backend = test::get_backend() == "CPU" || test::get_backend() == "BLAS";
         if (!is_cpu_backend) {
             fields.emplace_back("n_gpu_layers");

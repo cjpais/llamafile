@@ -113,10 +113,20 @@ void* PowerSampler::sampling_thread_func(void* arg) {
 NvidiaPowerSampler::NvidiaPowerSampler(long sample_length_ms)
     : PowerSampler(sample_length_ms) {
         // TODO should validate it worked.
-        nvml_init();
+        bool ok;
+        ok = nvml_init();
+        if (!ok) {
+            // exit the entire program if we can't get the nvml library
+            printf("Failed to initialize NVML\n");
+            exit(1);
+        }
 
         // TODO hardcoded to 0 in nvml
-        nvml_get_device(&device_);
+        ok = nvml_get_device(&device_);
+        if (!ok) {
+            printf("Failed to get NVML device 0\n");
+            exit(1);
+        }
     }
 
 NvidiaPowerSampler::~NvidiaPowerSampler() {
