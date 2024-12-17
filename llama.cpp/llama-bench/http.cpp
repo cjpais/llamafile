@@ -128,8 +128,6 @@ Response POST(const std::string& url, const std::string& body, const Headers& he
     /*
      * Parse URL.
      */
-
-
     const char* host = "llamascore.vercel.app";
     const char* path = "/api/store/results";
     const char* port = "443";  // HTTPS default port
@@ -375,6 +373,7 @@ Finished:
     response.status = msg.status;
     response.content_length = paylen;
     response.body = std::string(p + hdrlen, paylen);
+    printf("Response %d: %s\n", response.status, response.body.c_str());
     return response;
 
 }
