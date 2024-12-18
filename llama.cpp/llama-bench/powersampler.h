@@ -6,6 +6,7 @@
 #include "nvml.h"
 #include "rsmi.h"
 #include "apple.h"
+// #include "amdgpu.h"
 #include "llama.cpp/ggml-backend-impl.h"
 
 typedef struct {
@@ -53,7 +54,7 @@ struct NvidiaPowerSampler : public PowerSampler {
     unsigned long long start_joules_;
     unsigned long long end_joules_;
 
-    NvidiaPowerSampler(long sample_length_ms);
+    NvidiaPowerSampler(long sample_length_ms, unsigned int index);
     ~NvidiaPowerSampler() override;
 
 protected:
@@ -94,6 +95,15 @@ protected:
     double getEnergyConsumed() override;
 };
 
+// struct AMDPowerSampler2 : public PowerSampler {
+//     AMDPowerSampler2(long sample_length_ms);
+//     ~AMDPowerSampler2() override {}
+
+// protected:
+//     power_sample_t sample() override;
+//     double getEnergyConsumed() override;
+// };
+
 struct DummyPowerSampler : public PowerSampler {
     DummyPowerSampler(long sample_length_ms);
     ~DummyPowerSampler() override {}
@@ -103,4 +113,4 @@ protected:
     double getEnergyConsumed() override;
 };
 
-PowerSampler* getPowerSampler(long sample_length_ms);
+PowerSampler* getPowerSampler(long sample_length_ms, unsigned int index);

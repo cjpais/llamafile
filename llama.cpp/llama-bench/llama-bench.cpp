@@ -334,27 +334,34 @@ std::string exec(const char* cmd) {
 }
 
 // TODO move this into it's own file, sys info or something
-static void get_accelerator_info(AcceleratorInfo* info) {
+static void get_accelerator_info(AcceleratorInfo* info, int main_gpu) {
     if (info == NULL) return;
 
+    // TODO should pick the gpu based on mg flag???
     if (FLAG_gpu >= 0 && llamafile_has_gpu()) {
         if (llamafile_has_cuda()) {
             int count = ggml_backend_cuda_get_device_count();
-            if (count > 0) {
+            for (int i = 0; i < count; i++) {
                 struct ggml_cuda_device_properties props;
-                ggml_backend_cuda_get_device_properties(0, &props);
+                ggml_backend_cuda_get_device_properties(i, &props);
 
-                strncpy(info->name, props.name, MAX_STRING_LENGTH - 1);
-                info->total_memory_gb = props.totalGlobalMem / 1073741824.0;
-                info->core_count = props.multiProcessorCount;
-                info->capability = atof(props.compute);
-                strncpy(info->manufacturer, llamafile_has_amd_gpu() ? "AMD" : "NVIDIA", MAX_STRING_LENGTH - 1);
+                if (i == main_gpu) {
+                    strncpy(info->name, props.name, MAX_STRING_LENGTH - 1);
+                    info->total_memory_gb = props.totalGlobalMem / 1073741824.0;
+                    info->core_count = props.multiProcessorCount;
+                    info->capability = atof(props.compute);
+                    strncpy(info->manufacturer, llamafile_has_amd_gpu() ? "AMD" : "NVIDIA", MAX_STRING_LENGTH - 1);
+                }
 
-                fprintf(stderr, "\033[0;32m===== GPU information =====\n\n");
-                fprintf(stderr, "%-26s %s\n", "GPU Name:", info->name);
-                fprintf(stderr, "%-26s %.2f GiB\n", "VRAM:", info->total_memory_gb);
-                fprintf(stderr, "%-26s %d\n", "Streaming Multiprocessors:", info->core_count);
-                fprintf(stderr, "%-26s %.1f\n", "CUDA Capability:", info->capability);
+                if (i == main_gpu) {
+                    fprintf(stderr, "\033[0;32m===== Active GPU (GPU %d) information =====\n\n", i);
+                } else {
+                    fprintf(stderr, "\033[0;90m===== GPU %d information =====\n\n", i);
+                }
+                fprintf(stderr, "%-26s %s\n", "GPU Name:", props.name);
+                fprintf(stderr, "%-26s %.2f GiB\n", "VRAM:", props.totalGlobalMem / 1073741824.0);
+                fprintf(stderr, "%-26s %d\n", "Streaming Multiprocessors:", props.multiProcessorCount);
+                fprintf(stderr, "%-26s %.1f\n", "CUDA Capability:", atof(props.compute));
                 fprintf(stderr, "\n============================\n\n\033[0m");
             }
         }
@@ -449,7 +456,7 @@ struct cmd_params {
     std::vector<int> n_threads;
     std::vector<int> n_gpu_layers;
     std::vector<llama_split_mode> split_mode;
-    std::vector<int> main_gpu;
+    std::vector<unsigned int> main_gpu;
     std::vector<bool> no_kv_offload;
     std::vector<bool> flash_attn;
     std::vector<std::vector<float>> tensor_split;
@@ -568,7 +575,7 @@ static cmd_params parse_cmd_params(int argc, char ** argv) {
                 invalid_param = true;
                 break;
             }
-            params.main_gpu = split<int>(argv[i], split_delim);
+            params.main_gpu = split<unsigned int>(argv[i], split_delim);
         } else if (arg == "-fa" || arg == "--flash-attn") {
             if (++i >= argc) {
                 invalid_param = true;
@@ -662,7 +669,7 @@ struct cmd_params_instance {
     int n_threads;
     int n_gpu_layers;
     llama_split_mode split_mode;
-    int main_gpu;
+    unsigned int main_gpu;
     bool no_kv_offload;
     bool flash_attn;
     std::vector<float> tensor_split;
@@ -1093,7 +1100,8 @@ struct test {
             "prompt_tps", "prompt_tps_watt", "prompt_tps_stddev",
             "gen_tps", "gen_tps_watt", "gen_tps_stddev",
             // "name", "power_watts", "vram_used_mb", "ttft_ms"
-            "name", "power_watts", "ttft_ms"
+            "name", "power_watts", "ttft_ms",
+            "main_gpu"
         };
         return fields;
     }
@@ -1158,7 +1166,8 @@ struct test {
             std::to_string(avg_ts(PROMPT_TPS)), std::to_string(get_tps_watt(PROMPT_TPS)), std::to_string(stdev_ts(PROMPT_TPS)),
             std::to_string(avg_ts(GEN_TPS)), std::to_string(get_tps_watt(GEN_TPS)), std::to_string(stdev_ts(GEN_TPS)),
             // name, std::to_string(power), std::to_string(monitor_result.vram), std::to_string(ttft() / 1e6)
-            name, std::to_string(power), std::to_string(ttft() / 1e6)
+            name, std::to_string(power), std::to_string(ttft() / 1e6),
+            std::to_string(main_gpu)
         };
         return values;
     }
@@ -1453,42 +1462,6 @@ struct markdown_printer : public printer {
         if (!is_cpu_backend) {
             fields.emplace_back("n_gpu_layers");
         }
-        // if (params.n_threads.size() > 1 || params.n_threads != cmd_params_defaults.n_threads || is_cpu_backend) {
-        //     fields.emplace_back("n_threads");
-        // }
-        if (params.n_batch.size() > 1 || params.n_batch != cmd_params_defaults.n_batch) {
-            fields.emplace_back("n_batch");
-        }
-        if (params.n_ubatch.size() > 1 || params.n_ubatch != cmd_params_defaults.n_ubatch) {
-            fields.emplace_back("n_ubatch");
-        }
-        if (params.type_k.size() > 1 || params.type_k != cmd_params_defaults.type_k) {
-            fields.emplace_back("type_k");
-        }
-        if (params.type_v.size() > 1 || params.type_v != cmd_params_defaults.type_v) {
-            fields.emplace_back("type_v");
-        }
-        if (params.main_gpu.size() > 1 || params.main_gpu != cmd_params_defaults.main_gpu) {
-            fields.emplace_back("main_gpu");
-        }
-        if (params.split_mode.size() > 1 || params.split_mode != cmd_params_defaults.split_mode) {
-            fields.emplace_back("split_mode");
-        }
-        if (params.no_kv_offload.size() > 1 || params.no_kv_offload != cmd_params_defaults.no_kv_offload) {
-            fields.emplace_back("no_kv_offload");
-        }
-        if (params.flash_attn.size() > 1 || params.flash_attn != cmd_params_defaults.flash_attn) {
-            fields.emplace_back("flash_attn");
-        }
-        if (params.tensor_split.size() > 1 || params.tensor_split != cmd_params_defaults.tensor_split) {
-            fields.emplace_back("tensor_split");
-        }
-        if (params.use_mmap.size() > 1 || params.use_mmap != cmd_params_defaults.use_mmap) {
-            fields.emplace_back("use_mmap");
-        }
-        if (params.embeddings.size() > 1 || params.embeddings != cmd_params_defaults.embeddings) {
-            fields.emplace_back("embeddings");
-        }
         fields.emplace_back("tokens processed");
         fields.emplace_back("pp t/s");
         fields.emplace_back("tg t/s");
@@ -1749,6 +1722,7 @@ int main(int argc, char ** argv) {
     setlocale(LC_CTYPE, "C.UTF-8");  // [jart]
 
     cmd_params params = parse_cmd_params(argc, argv);
+    unsigned int main_gpu = params.main_gpu.front();
     FLAGS_READY = true;
 
     RuntimeInfo runtime_info;
@@ -1758,7 +1732,7 @@ int main(int argc, char ** argv) {
     get_sys_info(&sys_info);
 
     AcceleratorInfo accelerator_info;
-    get_accelerator_info(&accelerator_info);
+    get_accelerator_info(&accelerator_info, main_gpu);
 
     // initialize llama.cpp
     if (!params.verbose) {
@@ -1800,7 +1774,7 @@ int main(int argc, char ** argv) {
     llama_model * lmodel = nullptr;
     const cmd_params_instance * prev_inst = nullptr;
 
-    PowerSampler * sampler = getPowerSampler(100);
+    PowerSampler * sampler = getPowerSampler(100, main_gpu);
 
     pthread_t print_thread;
 
@@ -1908,6 +1882,7 @@ int main(int argc, char ** argv) {
         llama_print_timings(ctx);
 
         llama_free(ctx);
+        // break;
     }
 
     llama_free_model(lmodel);

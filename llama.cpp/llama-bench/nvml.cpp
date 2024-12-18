@@ -89,8 +89,6 @@ static bool get_nvml_bin_path(char path[PATH_MAX]) {
     else
         strlcpy(name, "libnvidia-ml.so", PATH_MAX);
 
-    printf("Looking for nvml library: %s\n", name);
-
     // search for it on $PATH
     if (commandv(name, path, PATH_MAX)) {
         printf("Found nvml on path: %s\n", path);
@@ -164,8 +162,8 @@ bool nvml_init() {
     return true;
 }
 
-bool nvml_get_device(nvmlDevice_t *device) {
-    NVML_FUNCTION_CALL(nvmlDeviceGetHandleByIndex_v2, 0, device);
+bool nvml_get_device(nvmlDevice_t *device, unsigned int index) {
+    NVML_FUNCTION_CALL(nvmlDeviceGetHandleByIndex_v2, index, device);
     return true;
 }
 

@@ -110,7 +110,7 @@ void* PowerSampler::sampling_thread_func(void* arg) {
 
 // NvidiaPowerSampler implementation
 
-NvidiaPowerSampler::NvidiaPowerSampler(long sample_length_ms)
+NvidiaPowerSampler::NvidiaPowerSampler(long sample_length_ms, unsigned int main_gpu)
     : PowerSampler(sample_length_ms) {
         // TODO should validate it worked.
         bool ok;
@@ -122,7 +122,7 @@ NvidiaPowerSampler::NvidiaPowerSampler(long sample_length_ms)
         }
 
         // TODO hardcoded to 0 in nvml
-        ok = nvml_get_device(&device_);
+        ok = nvml_get_device(&device_, main_gpu);
         if (!ok) {
             printf("Failed to get NVML device 0\n");
             exit(1);
@@ -233,6 +233,21 @@ double ApplePowerSampler::getEnergyConsumed() {
 
 // DummyPowerSampler implementation
 
+// AMDPowerSampler2::AMDPowerSampler2(long sample_length_ms)
+//     : PowerSampler(sample_length_ms) {
+//         amdgpu_init();
+//     }
+
+// power_sample_t AMDPowerSampler2::sample() {
+//     return {0.0, 0.0f};
+// }
+
+// double AMDPowerSampler2::getEnergyConsumed() {
+//     return 0.0;
+// }
+
+// DummyPowerSampler implementation
+
 DummyPowerSampler::DummyPowerSampler(long sample_length_ms)
     : PowerSampler(sample_length_ms) {}
 
@@ -245,15 +260,18 @@ double DummyPowerSampler::getEnergyConsumed() {
 }
 
 // Update getPowerSampler function to return DummyPowerSampler if no other sampler is found
-PowerSampler* getPowerSampler(long sample_length_ms) {
+// TODO handle which GPU to use (for NVIDIA)
+PowerSampler* getPowerSampler(long sample_length_ms, unsigned int main_gpu) {
     if (IsXnu()) {
         return new ApplePowerSampler(sample_length_ms);
     } else if (llamafile_has_gpu() && FLAG_gpu != LLAMAFILE_GPU_DISABLE) {
         if (llamafile_has_amd_gpu()) {
             // TODO change this to AMD power sampler when it works.
+            // return new AMDPowerSampler(sample_length_ms);
+            // return new AMDPowerSampler2(sample_length_ms);
             return new DummyPowerSampler(sample_length_ms);
         } else if (llamafile_has_cuda()) {
-            return new NvidiaPowerSampler(sample_length_ms);
+            return new NvidiaPowerSampler(sample_length_ms, main_gpu);
         }
     }
 
