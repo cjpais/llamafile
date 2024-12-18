@@ -442,9 +442,6 @@ static std::string pair_str(const std::pair<int, int> & p) {
 
 struct cmd_params {
     std::vector<std::string> model;
-    std::vector<int> n_prompt;
-    std::vector<int> n_gen;
-    std::vector<std::pair<int, int>> n_pg;
     std::vector<int> n_batch;
     std::vector<int> n_ubatch;
     std::vector<ggml_type> type_k;
@@ -467,16 +464,13 @@ struct cmd_params {
 
 static const cmd_params cmd_params_defaults = {
     /* model         */ {}, // [jart] no default guessing
-    /* n_prompt      */ {512},
-    /* n_gen         */ {16},
-    /* n_pg          */ {},
     /* n_batch       */ {2048},
     /* n_ubatch      */ {512},
     /* type_k        */ {X86_HAVE(AVX512_BF16) ? GGML_TYPE_BF16 : GGML_TYPE_F16},
     /* type_v        */ {X86_HAVE(AVX512_BF16) ? GGML_TYPE_BF16 : GGML_TYPE_F16},
     /* n_threads     */ {cpu_get_num_math()},
     /* n_gpu_layers  */ {0},
-    /* split_mode    */ {LLAMA_SPLIT_MODE_LAYER},
+    /* split_mode    */ {LLAMA_SPLIT_MODE_NONE},
     /* main_gpu      */ {0},
     /* no_kv_offload */ {false},
     /* flash_attn    */ {false},
@@ -496,24 +490,9 @@ static void print_usage(int /* argc */, char ** argv) {
     printf("options:\n");
     printf("  -h, --help\n");
     printf("  -m, --model <filename>              (default: %s)\n", join(cmd_params_defaults.model, ",").c_str());
-    printf("  -p, --n-prompt <n>                  (default: %s)\n", join(cmd_params_defaults.n_prompt, ",").c_str());
-    printf("  -n, --n-gen <n>                     (default: %s)\n", join(cmd_params_defaults.n_gen, ",").c_str());
-    printf("  -pg <pp,tg>                         (default: %s)\n", join(transform_to_str(cmd_params_defaults.n_pg, pair_str), ",").c_str());
-    printf("  -b, --batch-size <n>                (default: %s)\n", join(cmd_params_defaults.n_batch, ",").c_str());
-    printf("  -ub, --ubatch-size <n>              (default: %s)\n", join(cmd_params_defaults.n_ubatch, ",").c_str());
-    printf("  -ctk, --cache-type-k <t>            (default: %s)\n", join(transform_to_str(cmd_params_defaults.type_k, ggml_type_name), ",").c_str());
-    printf("  -ctv, --cache-type-v <t>            (default: %s)\n", join(transform_to_str(cmd_params_defaults.type_v, ggml_type_name), ",").c_str());
-    printf("  -t, --threads <n>                   (default: %s)\n", join(cmd_params_defaults.n_threads, ",").c_str());
     printf("  -ngl, --n-gpu-layers <n>            (default: %s)\n", join(cmd_params_defaults.n_gpu_layers, ",").c_str());
-    printf("  -sm, --split-mode <none|layer|row>  (default: %s)\n", join(transform_to_str(cmd_params_defaults.split_mode, split_mode_str), ",").c_str());
     printf("  -mg, --main-gpu <i>                 (default: %s)\n", join(cmd_params_defaults.main_gpu, ",").c_str());
-    printf("  -nkvo, --no-kv-offload <0|1>        (default: %s)\n", join(cmd_params_defaults.no_kv_offload, ",").c_str());
     printf("  -fa, --flash-attn <0|1>             (default: %s)\n", join(cmd_params_defaults.flash_attn, ",").c_str());
-    printf("  -mmp, --mmap <0|1>                  (default: %s)\n", join(cmd_params_defaults.use_mmap, ",").c_str());
-    printf("  --numa <distribute|isolate|numactl> (default: disabled)\n");
-    printf("  -embd, --embeddings <0|1>           (default: %s)\n", join(cmd_params_defaults.embeddings, ",").c_str());
-    printf("  -ts, --tensor-split <ts0/ts1/..>    (default: 0)\n");
-    printf("  -r, --repetitions <n>               (default: %d)\n", cmd_params_defaults.reps);
     printf("  -o, --output <csv|json|md|sql>      (default: %s)\n", output_format_str(cmd_params_defaults.output_format));
     printf("  -v, --verbose                       (default: %s)\n", cmd_params_defaults.verbose ? "1" : "0");
     printf("  -y, --send-results                  (default: %s)\n", cmd_params_defaults.send_results ? "1" : "0");
@@ -576,84 +555,6 @@ static cmd_params parse_cmd_params(int argc, char ** argv) {
             }
             auto p = split<std::string>(argv[i], split_delim);
             params.model.insert(params.model.end(), p.begin(), p.end());
-        } else if (arg == "-p" || arg == "--n-prompt") {
-            if (++i >= argc) {
-                invalid_param = true;
-                break;
-            }
-            auto p = split<int>(argv[i], split_delim);
-            params.n_prompt.insert(params.n_prompt.end(), p.begin(), p.end());
-        } else if (arg == "-n" || arg == "--n-gen") {
-            if (++i >= argc) {
-                invalid_param = true;
-                break;
-            }
-            auto p = split<int>(argv[i], split_delim);
-            params.n_gen.insert(params.n_gen.end(), p.begin(), p.end());
-        } else if (arg == "-pg") {
-            if (++i >= argc) {
-                invalid_param = true;
-                break;
-            }
-            auto p = split<std::string>(argv[i], ',');
-            if (p.size() != 2) {
-                invalid_param = true;
-                break;
-            }
-            params.n_pg.push_back({std::stoi(p[0]), std::stoi(p[1])});
-        } else if (arg == "-b" || arg == "--batch-size") {
-            if (++i >= argc) {
-                invalid_param = true;
-                break;
-            }
-            auto p = split<int>(argv[i], split_delim);
-            params.n_batch.insert(params.n_batch.end(), p.begin(), p.end());
-        } else if (arg == "-ub" || arg == "--ubatch-size") {
-            if (++i >= argc) {
-                invalid_param = true;
-                break;
-            }
-            auto p = split<int>(argv[i], split_delim);
-            params.n_ubatch.insert(params.n_ubatch.end(), p.begin(), p.end());
-        } else if (arg == "-ctk" || arg == "--cache-type-k") {
-            if (++i >= argc) {
-                invalid_param = true;
-                break;
-            }
-            auto p = split<std::string>(argv[i], split_delim);
-            std::vector<ggml_type> types;
-            for (const auto & t : p) {
-                ggml_type gt = ggml_type_from_name(t);
-                if (gt == GGML_TYPE_COUNT) {
-                    invalid_param = true;
-                    break;
-                }
-                types.push_back(gt);
-            }
-            params.type_k.insert(params.type_k.end(), types.begin(), types.end());
-        } else if (arg == "-ctv" || arg == "--cache-type-v") {
-            if (++i >= argc) {
-                invalid_param = true;
-                break;
-            }
-            auto p = split<std::string>(argv[i], split_delim);
-            std::vector<ggml_type> types;
-            for (const auto & t : p) {
-                ggml_type gt = ggml_type_from_name(t);
-                if (gt == GGML_TYPE_COUNT) {
-                    invalid_param = true;
-                    break;
-                }
-                types.push_back(gt);
-            }
-            params.type_v.insert(params.type_v.end(), types.begin(), types.end());
-        } else if (arg == "-t" || arg == "--threads") {
-            if (++i >= argc) {
-                invalid_param = true;
-                break;
-            }
-            auto p = split<int>(argv[i], split_delim);
-            params.n_threads.insert(params.n_threads.end(), p.begin(), p.end());
         } else if (arg == "-ngl" || arg == "--n-gpu-layers") {
             if (++i >= argc) {
                 invalid_param = true;
@@ -662,52 +563,12 @@ static cmd_params parse_cmd_params(int argc, char ** argv) {
             FLAG_gpu = LLAMAFILE_GPU_AUTO;
             auto p = split<int>(argv[i], split_delim);
             params.n_gpu_layers.insert(params.n_gpu_layers.end(), p.begin(), p.end());
-        } else if (arg == "-sm" || arg == "--split-mode") {
-            if (++i >= argc) {
-                invalid_param = true;
-                break;
-            }
-            auto p = split<std::string>(argv[i], split_delim);
-            std::vector<llama_split_mode> modes;
-            for (const auto & m : p) {
-                llama_split_mode mode;
-                if (m == "none") {
-                    mode = LLAMA_SPLIT_MODE_NONE;
-                } else if (m == "layer") {
-                    mode = LLAMA_SPLIT_MODE_LAYER;
-                } else if (m == "row") {
-                    mode = LLAMA_SPLIT_MODE_ROW;
-                } else {
-                    invalid_param = true;
-                    break;
-                }
-                modes.push_back(mode);
-            }
-            params.split_mode.insert(params.split_mode.end(), modes.begin(), modes.end());
         } else if (arg == "-mg" || arg == "--main-gpu") {
             if (++i >= argc) {
                 invalid_param = true;
                 break;
             }
             params.main_gpu = split<int>(argv[i], split_delim);
-        } else if (arg == "-nkvo" || arg == "--no-kv-offload") {
-            if (++i >= argc) {
-                invalid_param = true;
-                break;
-            }
-            auto p = split<bool>(argv[i], split_delim);
-            params.no_kv_offload.insert(params.no_kv_offload.end(), p.begin(), p.end());
-        } else if (arg == "--numa") {
-            if (++i >= argc) {
-                invalid_param = true;
-                break;
-            } else {
-                std::string value(argv[i]);
-                /**/ if (value == "distribute" || value == "" ) { params.numa = GGML_NUMA_STRATEGY_DISTRIBUTE; }
-                else if (value == "isolate")                    { params.numa = GGML_NUMA_STRATEGY_ISOLATE; }
-                else if (value == "numactl")                    { params.numa = GGML_NUMA_STRATEGY_NUMACTL; }
-                else { invalid_param = true; break; }
-            }
         } else if (arg == "-fa" || arg == "--flash-attn") {
             if (++i >= argc) {
                 invalid_param = true;
@@ -717,48 +578,6 @@ static cmd_params parse_cmd_params(int argc, char ** argv) {
             params.flash_attn.insert(params.flash_attn.end(), p.begin(), p.end());
         } else if (arg == "--recompile") {
             FLAG_recompile = true;            
-        } else if (arg == "-mmp" || arg == "--mmap") {
-            if (++i >= argc) {
-                invalid_param = true;
-                break;
-            }
-            auto p = split<bool>(argv[i], split_delim);
-            params.use_mmap.insert(params.use_mmap.end(), p.begin(), p.end());
-        } else if (arg == "-embd" || arg == "--embeddings") {
-            if (++i >= argc) {
-                invalid_param = true;
-                break;
-            }
-            auto p = split<bool>(argv[i], split_delim);
-            params.embeddings.insert(params.embeddings.end(), p.begin(), p.end());
-        } else if (arg == "-ts" || arg == "--tensor-split") {
-            if (++i >= argc) {
-                invalid_param = true;
-                break;
-            }
-            for (auto ts : split<std::string>(argv[i], split_delim)) {
-                // split string by ; and /
-                const std::regex regex{R"([;/]+)"};
-                std::sregex_token_iterator it{ts.begin(), ts.end(), regex, -1};
-                std::vector<std::string> split_arg{it, {}};
-                GGML_ASSERT(split_arg.size() <= llama_max_devices());
-
-                std::vector<float> tensor_split(llama_max_devices());
-                for (size_t i = 0; i < llama_max_devices(); ++i) {
-                    if (i < split_arg.size()) {
-                        tensor_split[i] = std::stof(split_arg[i]);
-                    } else {
-                        tensor_split[i] = 0.0f;
-                    }
-                }
-                params.tensor_split.push_back(tensor_split);
-            }
-        } else if (arg == "-r" || arg == "--repetitions") {
-            if (++i >= argc) {
-                invalid_param = true;
-                break;
-            }
-            params.reps = std::stoi(argv[i]);
         } else if (arg == "-o" || arg == "--output") {
             if (++i >= argc) {
                 invalid_param = true;
@@ -815,9 +634,6 @@ static cmd_params parse_cmd_params(int argc, char ** argv) {
 
     // set defaults
     if (params.model.empty())        { params.model = cmd_params_defaults.model; }
-    if (params.n_prompt.empty())     { params.n_prompt = cmd_params_defaults.n_prompt; }
-    if (params.n_gen.empty())        { params.n_gen = cmd_params_defaults.n_gen; }
-    if (params.n_pg.empty())         { params.n_pg = cmd_params_defaults.n_pg; }
     if (params.n_batch.empty())      { params.n_batch = cmd_params_defaults.n_batch; }
     if (params.n_ubatch.empty())     { params.n_ubatch = cmd_params_defaults.n_ubatch; }
     if (params.type_k.empty())       { params.type_k = cmd_params_defaults.type_k; }
@@ -908,80 +724,25 @@ static std::vector<cmd_params_instance> get_cmd_params_instances(const cmd_param
     for (const auto & nkvo : params.no_kv_offload)
     for (const auto & fa : params.flash_attn)
     for (const auto & nt : params.n_threads) {
-        for (const auto & n_prompt : params.n_prompt) {
-            if (n_prompt == 0) {
-                continue;
-            }
-            cmd_params_instance instance = {
-                /* .model        = */ m,
-                /* .n_prompt     = */ n_prompt,
-                /* .n_gen        = */ 0,
-                /* .n_batch      = */ nb,
-                /* .n_ubatch     = */ nub,
-                /* .type_k       = */ tk,
-                /* .type_v       = */ tv,
-                /* .n_threads    = */ nt,
-                /* .n_gpu_layers = */ nl,
-                /* .split_mode   = */ sm,
-                /* .main_gpu     = */ mg,
-                /* .no_kv_offload= */ nkvo,
-                /* .flash_attn   = */ fa,
-                /* .tensor_split = */ ts,
-                /* .use_mmap     = */ mmp,
-                /* .embeddings   = */ embd,
-            };
-            instances.push_back(instance);
-        }
-
-        for (const auto & n_gen : params.n_gen) {
-            if (n_gen == 0) {
-                continue;
-            }
-            cmd_params_instance instance = {
-                /* .model        = */ m,
-                /* .n_prompt     = */ 0,
-                /* .n_gen        = */ n_gen,
-                /* .n_batch      = */ nb,
-                /* .n_ubatch     = */ nub,
-                /* .type_k       = */ tk,
-                /* .type_v       = */ tv,
-                /* .n_threads    = */ nt,
-                /* .n_gpu_layers = */ nl,
-                /* .split_mode   = */ sm,
-                /* .main_gpu     = */ mg,
-                /* .no_kv_offload= */ nkvo,
-                /* .flash_attn   = */ fa,
-                /* .tensor_split = */ ts,
-                /* .use_mmap     = */ mmp,
-                /* .embeddings   = */ embd,
-            };
-            instances.push_back(instance);
-        }
-
-        for (const auto & n_pg : params.n_pg) {
-            if (n_pg.first == 0 && n_pg.second == 0) {
-                continue;
-            }
-            cmd_params_instance instance = {
-                /* .model        = */ m,
-                /* .n_prompt     = */ n_pg.first,
-                /* .n_gen        = */ n_pg.second,
-                /* .n_batch      = */ nb,
-                /* .n_ubatch     = */ nub,
-                /* .type_k       = */ tk,
-                /* .type_v       = */ tv,
-                /* .n_threads    = */ nt,
-                /* .n_gpu_layers = */ nl,
-                /* .split_mode   = */ sm,
-                /* .main_gpu     = */ mg,
-                /* .no_kv_offload= */ nkvo,
-                /* .flash_attn   = */ fa,
-                /* .tensor_split = */ ts,
-                /* .use_mmap     = */ mmp,
-                /* .embeddings   = */ embd,
-            };
-            instances.push_back(instance);
-        }
+        cmd_params_instance instance = {
+            /* .model        = */ m,
+            /* .n_prompt     = */ 0,
+            /* .n_gen        = */ 0,
+            /* .n_batch      = */ nb,
+            /* .n_ubatch     = */ nub,
+            /* .type_k       = */ tk,
+            /* .type_v       = */ tv,
+            /* .n_threads    = */ nt,
+            /* .n_gpu_layers = */ nl,
+            /* .split_mode   = */ sm,
+            /* .main_gpu     = */ mg,
+            /* .no_kv_offload= */ nkvo,
+            /* .flash_attn   = */ fa,
+            /* .tensor_split = */ ts,
+            /* .use_mmap     = */ mmp,
+            /* .embeddings   = */ embd,
+        };
+        instances.push_back(instance);
     }
 
     return instances;
@@ -2162,6 +1923,7 @@ int main(int argc, char ** argv) {
         user_cnf = getUserConfirmation();
     }
 
+    // TODO make this a func or something, also retry if it fails to send. 3 times. backoff
     if (user_cnf == "yes" || user_cnf == "y" || params.send_results) {
         printf("\nSending data to the public database...\n");
         Response response = POST("https://llamascore.vercel.app/api/store/results", req_payload, {
