@@ -110,6 +110,69 @@ static T stdev(const std::vector<T> & v) {
     return stdev;
 }
 
+enum output_formats {CSV, JSON, MARKDOWN, SQL};
+
+struct cmd_params {
+    std::string model;
+    int n_prompt;
+    int n_gen;
+    int n_batch;
+    int n_ubatch;
+    ggml_type type_k;
+    ggml_type type_v;
+    int n_threads;
+    int gpu;
+    int n_gpu_layers;
+    llama_split_mode split_mode; 
+    unsigned int main_gpu;
+    bool no_kv_offload;
+    bool flash_attn;
+    std::vector<float> tensor_split;
+    bool use_mmap;
+    bool embeddings;
+    ggml_numa_strategy numa;
+    int reps;
+    bool verbose;
+    bool send_results;
+    output_formats output_format;
+
+    llama_model_params to_llama_mparams() const {
+        llama_model_params mparams = llama_model_default_params();
+
+        mparams.n_gpu_layers = n_gpu_layers;
+        mparams.split_mode = split_mode;
+        mparams.main_gpu = main_gpu;
+        mparams.tensor_split = tensor_split.data();
+        mparams.use_mmap = use_mmap;
+
+        return mparams;
+    }
+
+    bool equal_mparams(const cmd_params & other) const {
+        return model == other.model &&
+               n_gpu_layers == other.n_gpu_layers &&
+               split_mode == other.split_mode &&
+               main_gpu == other.main_gpu && 
+               use_mmap == other.use_mmap &&
+               tensor_split == other.tensor_split;
+    }
+
+    llama_context_params to_llama_cparams() const {
+        llama_context_params cparams = llama_context_default_params();
+
+        cparams.n_ctx = n_prompt + n_gen;
+        cparams.n_batch = n_batch;
+        cparams.n_ubatch = n_ubatch;
+        cparams.type_k = type_k;
+        cparams.type_v = type_v;
+        cparams.offload_kqv = !no_kv_offload;
+        cparams.flash_attn = flash_attn;
+        cparams.embeddings = embeddings;
+
+        return cparams;
+    }
+};
+
 #ifdef __x86_64__
 static void cpuid(unsigned leaf, unsigned subleaf, unsigned *info) {
     asm("movq\t%%rbx,%%rsi\n\t"
@@ -334,18 +397,42 @@ std::string exec(const char* cmd) {
 }
 
 // TODO move this into it's own file, sys info or something
-static void get_accelerator_info(AcceleratorInfo* info, int main_gpu) {
+static void get_accelerator_info(AcceleratorInfo* info, cmd_params * params) {
     if (info == NULL) return;
 
     // TODO should pick the gpu based on mg flag???
     if (FLAG_gpu >= 0 && llamafile_has_gpu()) {
         if (llamafile_has_cuda()) {
             int count = ggml_backend_cuda_get_device_count();
+            if (params->main_gpu == UINT_MAX) {
+                if (count == 1) {
+                    params->main_gpu = 0;
+                } else {
+                    // prompt the user to select the main GPU
+                    fprintf(stderr, "\033[0;33mMultiple GPUs detected. Please select the main GPU to use:\n\n");
+                    for (int i = 0; i < count; i++) {
+                        struct ggml_cuda_device_properties props;
+                        ggml_backend_cuda_get_device_properties(i, &props);
+                        fprintf(stderr, "%d: %s\n", i, props.name);
+                    }
+                    fprintf(stderr, "\n\033[0m");
+                    unsigned int main_gpu;
+                    while (true) {
+                        fprintf(stderr, "Enter the number of the main GPU: ");
+                        std::cin >> main_gpu;
+                        if (main_gpu >= 0 && main_gpu < count) {
+                            break;
+                        }
+                        fprintf(stderr, "Invalid GPU number. Please try again.\n");
+                    }
+                    params->main_gpu = main_gpu;
+                }
+            }
             for (int i = 0; i < count; i++) {
                 struct ggml_cuda_device_properties props;
                 ggml_backend_cuda_get_device_properties(i, &props);
 
-                if (i == main_gpu) {
+                if (i == params->main_gpu) {
                     strncpy(info->name, props.name, MAX_STRING_LENGTH - 1);
                     info->total_memory_gb = props.totalGlobalMem / 1073741824.0;
                     info->core_count = props.multiProcessorCount;
@@ -353,7 +440,7 @@ static void get_accelerator_info(AcceleratorInfo* info, int main_gpu) {
                     strncpy(info->manufacturer, llamafile_has_amd_gpu() ? "AMD" : "NVIDIA", MAX_STRING_LENGTH - 1);
                 }
 
-                if (i == main_gpu) {
+                if (i == params->main_gpu) {
                     fprintf(stderr, "\033[0;32m===== Active GPU (GPU %d) information =====\n\n", i);
                 } else {
                     fprintf(stderr, "\033[0;90m===== GPU %d information =====\n\n", i);
@@ -420,7 +507,6 @@ static void get_accelerator_info(AcceleratorInfo* info, int main_gpu) {
 }
 
 // command line params
-enum output_formats {CSV, JSON, MARKDOWN, SQL};
 
 static const char * output_format_str(output_formats format) {
     switch (format) {
@@ -447,66 +533,6 @@ static std::string pair_str(const std::pair<int, int> & p) {
     return buf;
 }
 
-struct cmd_params {
-    std::string model;
-    int n_prompt;
-    int n_gen;
-    int n_batch;
-    int n_ubatch;
-    ggml_type type_k;
-    ggml_type type_v;
-    int n_threads;
-    int gpu;
-    int n_gpu_layers;
-    llama_split_mode split_mode; 
-    unsigned int main_gpu;
-    bool no_kv_offload;
-    bool flash_attn;
-    std::vector<float> tensor_split;
-    bool use_mmap;
-    bool embeddings;
-    ggml_numa_strategy numa;
-    int reps;
-    bool verbose;
-    bool send_results;
-    output_formats output_format;
-
-    llama_model_params to_llama_mparams() const {
-        llama_model_params mparams = llama_model_default_params();
-
-        mparams.n_gpu_layers = n_gpu_layers;
-        mparams.split_mode = split_mode;
-        mparams.main_gpu = main_gpu;
-        mparams.tensor_split = tensor_split.data();
-        mparams.use_mmap = use_mmap;
-
-        return mparams;
-    }
-
-    bool equal_mparams(const cmd_params & other) const {
-        return model == other.model &&
-               n_gpu_layers == other.n_gpu_layers &&
-               split_mode == other.split_mode &&
-               main_gpu == other.main_gpu && 
-               use_mmap == other.use_mmap &&
-               tensor_split == other.tensor_split;
-    }
-
-    llama_context_params to_llama_cparams() const {
-        llama_context_params cparams = llama_context_default_params();
-
-        cparams.n_ctx = n_prompt + n_gen;
-        cparams.n_batch = n_batch;
-        cparams.n_ubatch = n_ubatch;
-        cparams.type_k = type_k;
-        cparams.type_v = type_v;
-        cparams.offload_kqv = !no_kv_offload;
-        cparams.flash_attn = flash_attn;
-        cparams.embeddings = embeddings;
-
-        return cparams;
-    }
-};
 
 static const cmd_params cmd_params_defaults = {
     /* model         */ "", // [jart] no default guessing
@@ -520,7 +546,7 @@ static const cmd_params cmd_params_defaults = {
     /* gpu           */ LLAMAFILE_GPU_AUTO,
     /* n_gpu_layers  */ 9999,
     /* split_mode    */ LLAMA_SPLIT_MODE_NONE,
-    /* main_gpu      */ 0,
+    /* main_gpu      */ UINT_MAX,
     /* no_kv_offload */ false,
     /* flash_attn    */ false,
     /* tensor_split  */ std::vector<float>(llama_max_devices(), 0.0f),
@@ -1633,7 +1659,6 @@ int main(int argc, char ** argv) {
     setlocale(LC_CTYPE, "C.UTF-8");  // [jart]
 
     cmd_params params = parse_cmd_params(argc, argv);
-    unsigned int main_gpu = params.main_gpu;
     FLAGS_READY = true;
 
     RuntimeInfo runtime_info;
@@ -1643,7 +1668,9 @@ int main(int argc, char ** argv) {
     get_sys_info(&sys_info);
 
     AcceleratorInfo accelerator_info;
-    get_accelerator_info(&accelerator_info, main_gpu);
+    get_accelerator_info(&accelerator_info, &params);
+
+    unsigned int main_gpu = params.main_gpu;
 
     // initialize llama.cpp
     if (!params.verbose) {
