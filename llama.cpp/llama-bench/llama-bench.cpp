@@ -2164,7 +2164,9 @@ int main(int argc, char ** argv) {
 
     if (user_cnf == "yes" || user_cnf == "y" || params.send_results) {
         printf("\nSending data to the public database...\n");
-        Response response = POST("https://test.com", req_payload, {});
+        Response response = POST("https://llamascore.vercel.app/api/store/results", req_payload, {
+            {"Content-Type", "application/json"}
+        });
 
         if (response.status == 200) {
             printf("Data sent to the public database.\n");
@@ -2185,6 +2187,8 @@ int main(int argc, char ** argv) {
             if (json.second["id"].isString()) {
                 printf("Result Link: https://llamascore.vercel.app/result/%s\n", json.second["id"].getString().c_str());
             }
+        } else {
+            printf("Error sending data to the public database. Status: %d\n", response.status);
         }
     } else {
         printf("\nData not sent to the public database.\n");
