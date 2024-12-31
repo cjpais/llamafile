@@ -408,6 +408,7 @@ static void get_accelerator_info(AcceleratorInfo* info, cmd_params * params) {
                 if (count == 1) {
                     params->main_gpu = 0;
                 } else {
+                    // TODO do this for AMD as well.
                     // prompt the user to select the main GPU
                     fprintf(stderr, "\033[0;33mMultiple GPUs detected. Please select the main GPU to use:\n\n");
                     for (int i = 0; i < count; i++) {
@@ -419,8 +420,10 @@ static void get_accelerator_info(AcceleratorInfo* info, cmd_params * params) {
                     unsigned int main_gpu;
                     while (true) {
                         fprintf(stderr, "Enter the number of the main GPU: ");
-                        std::cin >> main_gpu;
-                        if (main_gpu >= 0 && main_gpu < count) {
+                        std::string input;
+                        std::getline(std::cin, input);
+                        std::istringstream iss(input);
+                        if (iss >> main_gpu && main_gpu >= 0 && main_gpu < count) {
                             break;
                         }
                         fprintf(stderr, "Invalid GPU number. Please try again.\n");
@@ -553,7 +556,7 @@ static const cmd_params cmd_params_defaults = {
     /* use_mmap      */ true,
     /* embeddings    */ false,
     /* numa          */ GGML_NUMA_STRATEGY_DISABLED,
-    /* reps          */ 4,
+    /* reps          */ 1,
     /* verbose       */ false,
     /* send_results  */ false,
     /* output_format */ MARKDOWN,
@@ -1639,6 +1642,114 @@ __attribute__((__constructor__(101))) static void init(void) {
     FLAG_gpu = LLAMAFILE_GPU_AUTO;
 }
 
+const char* digits[10] = {
+    // 0
+    " ██████ \n"
+    "██    ██\n"
+    "██    ██\n"
+    "██    ██\n"
+    " ██████ \n",
+    
+    // 1
+    " ██ \n"
+    "███ \n"
+    " ██ \n"
+    " ██ \n"
+    " ██ \n",
+    
+    // 2
+    "██████  \n"
+    "     ██ \n"
+    " █████  \n"
+    "██      \n"
+    "███████ \n",
+    
+    // 3
+    "██████  \n"
+    "     ██ \n"
+    " █████  \n"
+    "     ██ \n"
+    "██████  \n",
+    
+    // 4
+    "██   ██ \n"
+    "██   ██ \n"
+    "███████ \n"
+    "     ██ \n"
+    "     ██ \n",
+    
+    // 5
+    "███████ \n"
+    "██      \n"
+    "██████  \n"
+    "     ██ \n"
+    "██████  \n",
+    
+    // 6
+    " ██████ \n"
+    "██      \n"
+    "███████ \n"
+    "██    ██\n"
+    " ██████ \n",
+    
+    // 7
+    "███████ \n"
+    "     ██ \n"
+    "    ██  \n"
+    "   ██   \n"
+    "  ██    \n",
+    
+    // 8
+    " █████  \n"
+    "██   ██ \n"
+    " █████  \n"
+    "██   ██ \n"
+    " █████  \n",
+    
+    // 9
+    " ██████ \n"
+    "██    ██\n"
+    " ███████\n"
+    "      ██\n"
+    " ██████ \n"
+};
+
+void printLargeNumber(int number) {
+    // Convert number to string
+    std::string num_str = std::to_string(number);
+    
+    // Handle negative numbers
+    bool is_negative = number < 0;
+    if (is_negative) {
+        num_str = num_str.substr(1); // Remove the minus sign for processing
+    }
+
+    // Print each row
+    for (int row = 0; row < 5; row++) {
+        for (char digit : num_str) {
+            int d = digit - '0';  // Convert char to int
+            
+            // Find the start and end of the current row in the digit's string
+            const char* ptr = digits[d];
+            int line_start = 0;
+            for (int i = 0; i < row; i++) {
+                while (ptr[line_start] != '\n') line_start++;
+                line_start++; // Skip the newline
+            }
+            
+            int line_end = line_start;
+            while (ptr[line_end] && ptr[line_end] != '\n') line_end++;
+            
+            // Print the current row
+            for (int i = line_start; i < line_end; i++) {
+                std::cout << ptr[i];
+            }
+            std::cout << " "; // Space between digits
+        }
+        std::cout << "\n";
+    }
+}
+
 int main(int argc, char ** argv) {
     ShowCrashReports();
 
@@ -1815,7 +1926,6 @@ int main(int argc, char ** argv) {
         llama_print_timings(ctx);
 
         llama_free(ctx);
-        // break;
     }
 
     llama_free_model(lmodel);
@@ -1824,6 +1934,80 @@ int main(int argc, char ** argv) {
     req_printer->print_footer();
 
     llama_backend_free();
+
+    std::pair<Json::Status, Json> data =
+              Json::parse(req_payload);
+
+    if (data.first != Json::success) {
+        printf("Error parsing json\n");
+        return 1;
+    }
+
+    if (!data.second.isObject()) {
+        printf("Json is not an object\n");
+        return 1;
+    }
+    if (data.second["results"].isArray()) {
+        std::vector<Json> results = data.second["results"].getArray();
+        
+        double total_prompt_tps = 0.0;
+        double total_gen_tps = 0.0;
+        double total_ttft_ms = 0.0;
+        double total_power_watts = 0.0;
+        int valid_count = 0;
+
+        for (const auto & result : results) {
+            if (result.isObject()) {
+                bool valid_entry = true;
+                
+                // Check if all required fields exist and are numbers
+                if (!result.contains("prompt_tps") || 
+                    !result.contains("gen_tps") || 
+                    !result.contains("ttft_ms") || 
+                    !result.contains("power_watts")) {
+                    valid_entry = false;
+                } else {
+                    // Get a non-const reference to access the values
+                    auto& obj = const_cast<Json&>(result);
+                    if (!obj["prompt_tps"].isNumber() ||
+                        !obj["gen_tps"].isNumber() ||
+                        !obj["ttft_ms"].isNumber() ||
+                        !obj["power_watts"].isNumber()) {
+                        valid_entry = false;
+                    }
+                }
+
+                if (valid_entry) {
+                    auto& obj = const_cast<Json&>(result);
+                    total_prompt_tps += obj["prompt_tps"].getNumber();
+                    total_gen_tps += obj["gen_tps"].getNumber();
+                    total_ttft_ms += obj["ttft_ms"].getNumber();
+                    total_power_watts += obj["power_watts"].getNumber();
+                    valid_count++;
+                }
+            }
+        }
+
+        if (valid_count > 0) {
+            double avg_prompt_tps = total_prompt_tps / valid_count;
+            double avg_gen_tps = total_gen_tps / valid_count;
+            double avg_ttft_ms = total_ttft_ms / valid_count;
+
+
+            // calculate the geometric mean of the performance values for a score
+            double score = pow(avg_prompt_tps * avg_gen_tps * (1000 / avg_ttft_ms), 1.0 / 3.0) * 10;
+            printf("\n\033[1;35mYour LocalScore:\n\n", score);
+            printLargeNumber((int)score);
+            printf("\033[0m\n");
+            printf("- Prompt Processing: \t %.2f tok/s\n", avg_prompt_tps);
+            printf("- Token Generation: \t %.2f tok/s\n", avg_gen_tps);
+            printf("- Time to First Token:\t %.2f ms\n", avg_ttft_ms);
+        } else {
+            printf("No valid results found in the array\n");
+        }
+    } else {
+        printf("Results is not an array\n");
+    }
 
     // Ask user for confirmation before sending the data
     std::string user_cnf;
