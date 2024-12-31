@@ -112,20 +112,14 @@ void* PowerSampler::sampling_thread_func(void* arg) {
 
 NvidiaPowerSampler::NvidiaPowerSampler(long sample_length_ms, unsigned int main_gpu)
     : PowerSampler(sample_length_ms) {
-        // TODO should validate it worked.
-        bool ok;
-        ok = nvml_init();
+        bool ok = nvml_init();
         if (!ok) {
-            // exit the entire program if we can't get the nvml library
-            printf("Failed to initialize NVML\n");
-            exit(1);
+            throw std::runtime_error("Failed to initialize NVML");
         }
 
-        // TODO hardcoded to 0 in nvml
         ok = nvml_get_device(&device_, main_gpu);
         if (!ok) {
-            printf("Failed to get NVML device 0\n");
-            exit(1);
+            throw std::runtime_error("Failed to get NVML device");
         }
     }
 
@@ -271,7 +265,13 @@ PowerSampler* getPowerSampler(long sample_length_ms, unsigned int main_gpu) {
             // return new AMDPowerSampler2(sample_length_ms);
             return new DummyPowerSampler(sample_length_ms);
         } else if (llamafile_has_cuda()) {
-            return new NvidiaPowerSampler(sample_length_ms, main_gpu);
+            try {
+                return new NvidiaPowerSampler(sample_length_ms, main_gpu);
+            } catch (const std::exception& e) {
+                // Log the error if needed
+                printf("NVIDIA initialization failed: %s\n", e.what());
+                return new DummyPowerSampler(sample_length_ms);
+            }
         }
     }
 
