@@ -156,17 +156,25 @@ cmd_params parse_cmd_params(int argc, char ** argv) {
     return params;
 }
 
+static const char * output_format_str(output_formats format) {
+    switch (format) {
+        case CSV:      return "csv";
+        case JSON:     return "json";
+        case MARKDOWN: return "md";
+        case SQL:      return "sql";
+        default: GGML_ASSERT(!"invalid output format");
+    }
+}
+
 void print_usage(int /* argc */, char ** argv) {
     printf("usage: %s [options]\n", argv[0]);
     printf("\n");
     printf("options:\n");
     printf("  -h, --help\n");
-    printf("  -m, --model <filename>              (default: %s)\n", cmd_params_defaults.model.c_str());
-    printf("  -g, --gpu <n>                       (default: %d)\n", cmd_params_defaults.n_gpu_layers);
-    printf("  -mg, --main-gpu <i>                 (default: %d)\n", cmd_params_defaults.main_gpu);
-    printf("  -o, --output <csv|json|md|sql>      (default: %s)\n", cmd_params_defaults.output_format);
-    printf("  -v, --verbose                       (default: %s)\n", cmd_params_defaults.verbose ? "1" : "0");
-    printf("  -y, --send-results                  (default: %s)\n", cmd_params_defaults.send_results ? "1" : "0");
-    printf("\n");
-    printf("Multiple values can be given for each parameter by separating them with ',' or by specifying the parameter multiple times.\n");
+    printf("  -m, --model <filename>                     (default: %s)\n", cmd_params_defaults.model.c_str());
+    printf("  -g, --gpu <auto|amd|apple|nvidia|disabled> (default: \"auto\")\n");
+    printf("  -mg, --main-gpu <i>                        (default: %d)\n", cmd_params_defaults.main_gpu);
+    printf("  -o, --output <csv|json|md|sql>             (default: %s)\n", output_format_str(cmd_params_defaults.output_format));
+    printf("  -v, --verbose                              (default: %s)\n", cmd_params_defaults.verbose ? "1" : "0");
+    printf("  -y, --send-results                         (default: %s)\n", cmd_params_defaults.send_results ? "1" : "0");
 }
