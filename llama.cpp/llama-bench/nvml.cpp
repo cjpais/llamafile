@@ -151,7 +151,9 @@ bool nvml_init() {
 
     if (!ok) {
         tinylog(__func__, ": error: not all nvml symbols could be imported\n", NULL);
+        tinylog(__func__, "closing nvml library\n", NULL);
         cosmo_dlclose(lib);
+        tinylog(__func__, "closed nvml library\n", NULL);
         return false;
     }
 

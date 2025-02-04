@@ -28,7 +28,6 @@
 #include <atomic> // TODO similar
 #include <sys/stat.h>
 #include <libc/intrin/x86.h>
-#include "llama.cpp/cores.h"
 #include <libc/sysv/consts/hwcap.h>
 
 #include <sys/utsname.h>
@@ -37,7 +36,12 @@
 
 #include "http.h"
 #include "powersampler.h"
+#include "ascii_digits.h"
+#include "system.h"
+#include "utils.h"
+#include "cmd.h"
 
+#include "llama.cpp/cores.h"
 #include "llama.cpp/ggml.h"
 #include "llama.cpp/ggml-metal.h"
 #include "llama.cpp/llama.h"
@@ -51,463 +55,7 @@
 
 using jt::Json;
 
-// utils
-static uint64_t get_time_ns() {
-    using clock = std::chrono::high_resolution_clock;
-    return std::chrono::nanoseconds(clock::now().time_since_epoch()).count();
-}
 
-template<class T>
-static std::string join(const std::vector<T> & values, const std::string & delim) {
-    std::ostringstream str;
-    for (size_t i = 0; i < values.size(); i++) {
-        str << values[i];
-        if (i < values.size() - 1) {
-            str << delim;
-        }
-    }
-    return str.str();
-}
-
-template<class T>
-static std::vector<T> split(const std::string & str, char delim) {
-    std::vector<T> values;
-    std::istringstream str_stream(str);
-    std::string token;
-    while (std::getline(str_stream, token, delim)) {
-        T value;
-        std::istringstream token_stream(token);
-        token_stream >> value;
-        values.push_back(value);
-    }
-    return values;
-}
-
-template<typename T, typename F>
-static std::vector<std::string> transform_to_str(const std::vector<T> & values, F f) {
-    std::vector<std::string> str_values;
-    std::transform(values.begin(), values.end(), std::back_inserter(str_values), f);
-    return str_values;
-}
-
-template<typename T>
-static T avg(const std::vector<T> & v) {
-    if (v.empty()) {
-        return 0;
-    }
-    T sum = std::accumulate(v.begin(), v.end(), T(0));
-    return sum / (T)v.size();
-}
-
-template<typename T>
-static T stdev(const std::vector<T> & v) {
-    if (v.size() <= 1) {
-        return 0;
-    }
-    T mean = avg(v);
-    T sq_sum = std::inner_product(v.begin(), v.end(), v.begin(), T(0));
-    T stdev = std::sqrt(sq_sum / (T)(v.size() - 1) - mean * mean * (T)v.size() / (T)(v.size() - 1));
-    return stdev;
-}
-
-enum output_formats {CSV, JSON, MARKDOWN, SQL};
-
-struct cmd_params {
-    std::string model;
-    int n_prompt;
-    int n_gen;
-    int n_batch;
-    int n_ubatch;
-    ggml_type type_k;
-    ggml_type type_v;
-    int n_threads;
-    int gpu;
-    int n_gpu_layers;
-    llama_split_mode split_mode; 
-    unsigned int main_gpu;
-    bool no_kv_offload;
-    bool flash_attn;
-    std::vector<float> tensor_split;
-    bool use_mmap;
-    bool embeddings;
-    ggml_numa_strategy numa;
-    int reps;
-    bool verbose;
-    bool send_results;
-    output_formats output_format;
-
-    llama_model_params to_llama_mparams() const {
-        llama_model_params mparams = llama_model_default_params();
-
-        mparams.n_gpu_layers = n_gpu_layers;
-        mparams.split_mode = split_mode;
-        mparams.main_gpu = main_gpu;
-        mparams.tensor_split = tensor_split.data();
-        mparams.use_mmap = use_mmap;
-
-        return mparams;
-    }
-
-    bool equal_mparams(const cmd_params & other) const {
-        return model == other.model &&
-               n_gpu_layers == other.n_gpu_layers &&
-               split_mode == other.split_mode &&
-               main_gpu == other.main_gpu && 
-               use_mmap == other.use_mmap &&
-               tensor_split == other.tensor_split;
-    }
-
-    llama_context_params to_llama_cparams() const {
-        llama_context_params cparams = llama_context_default_params();
-
-        cparams.n_ctx = n_prompt + n_gen;
-        cparams.n_batch = n_batch;
-        cparams.n_ubatch = n_ubatch;
-        cparams.type_k = type_k;
-        cparams.type_v = type_v;
-        cparams.offload_kqv = !no_kv_offload;
-        cparams.flash_attn = flash_attn;
-        cparams.embeddings = embeddings;
-
-        return cparams;
-    }
-};
-
-#ifdef __x86_64__
-static void cpuid(unsigned leaf, unsigned subleaf, unsigned *info) {
-    asm("movq\t%%rbx,%%rsi\n\t"
-        "cpuid\n\t"
-        "xchgq\t%%rbx,%%rsi"
-        : "=a"(info[0]), "=S"(info[1]), "=c"(info[2]), "=d"(info[3])
-        : "0"(leaf), "2"(subleaf));
-}
-
-// TODO implement an arm version as well
-char* get_cpu_manufacturer(void) {
-    union {
-        char str[13];      // 12 chars + null terminator
-        unsigned reg[4];   // For the 4 registers (EAX, EBX, ECX, EDX)
-    } u = {0};            // Initialize to zero
-
-    // Get manufacturer ID with leaf 0
-    cpuid(0, 0, u.reg);
-
-    // Rearrange the registers to get the correct string
-    // The manufacturer string is in EBX,EDX,ECX order
-    unsigned temp = u.reg[1];        // Save EBX
-    u.reg[0] = temp;                 // Move EBX to first position
-    u.reg[1] = u.reg[3];             // Move EDX to second position
-    u.reg[2] = u.reg[2];             // ECX stays in third position
-    u.reg[3] = 0;                     // Ensure null termination
-
-    const char* manufacturer = u.str;
-    if (strcmp(manufacturer, "AuthenticAMD") == 0) {
-        return strdup("AMD");
-    } else if (strcmp(manufacturer, "GenuineIntel") == 0) {
-        return strdup("Intel");
-    }
-
-    return strdup(manufacturer);  // Return the original string if unknown
-}
-#endif // __x86_64__
-
-static std::string get_cpu_info() { // [jart]
-    std::string id;
-
-#ifdef __x86_64__
-    union { // [jart]
-        char str[64];
-        unsigned reg[16];
-    } u = {0};
-    cpuid(0x80000002, 0, u.reg + 0*4);
-    cpuid(0x80000003, 0, u.reg + 1*4);
-    cpuid(0x80000004, 0, u.reg + 2*4);
-    int len = strlen(u.str);
-    while (len > 0 && u.str[len - 1] == ' ')
-        u.str[--len] = 0;
-    id = u.str;
-#else
-    if (IsLinux()) {
-        FILE * f = fopen("/proc/cpuinfo", "r");
-        if (f) {
-            char buf[1024];
-            while (fgets(buf, sizeof(buf), f)) {
-                if (!strncmp(buf, "model name", 10) ||
-                    startswith(buf, "Model\t\t:")) { // e.g. raspi
-                    char * p = strchr(buf, ':');
-                    if (p) {
-                        p++;
-                        while (std::isspace(*p)) {
-                            p++;
-                        }
-                        while (std::isspace(p[strlen(p) - 1])) {
-                            p[strlen(p) - 1] = '\0';
-                        }
-                        id = p;
-                        break;
-                    }
-                }
-            }
-            fclose(f);
-        }
-    }
-    if (IsXnu()) {
-        // TODO we can also do something similar to https://github.com/vladkens/macmon/blob/main/src/sources.rs#L424
-        char cpu_name[128] = {0};
-        size_t size = sizeof(cpu_name);
-        if (sysctlbyname("machdep.cpu.brand_string", cpu_name, &size, NULL, 0) != -1) {
-            id = cpu_name;
-        }
-
-        // TODO IF ARCH IS ARM
-        // Get number of performance cores on macos
-        int num_perf0_cpu;
-        size = sizeof(num_perf0_cpu);
-        if (sysctlbyname("hw.perflevel0.logicalcpu", &num_perf0_cpu, &size, NULL, 0) != -1) {
-            id += " ";
-            id += std::to_string(num_perf0_cpu);
-            id += "P";
-        }
-
-        // Get number of efficiency cores on macos
-        int num_perf1_cpu;
-        size = sizeof(num_perf1_cpu);
-        if (sysctlbyname("hw.perflevel1.logicalcpu", &num_perf1_cpu, &size, NULL, 0) != -1) {
-            id += "+";
-            id += std::to_string(num_perf1_cpu);
-            id += "E";
-        }
-
-    }
-#endif
-    id = replace_all(id, " 96-Cores", "");
-    id = replace_all(id, "(TM)", "");
-    id = replace_all(id, "(R)", "");
-
-    std::string march;
-#ifdef __x86_64__
-    if (__cpu_march(__cpu_model.__cpu_subtype))
-        march = __cpu_march(__cpu_model.__cpu_subtype);
-#else
-    // TODO. We can do this separately as part of 'features' or something
-    // long hwcap = getauxval(AT_HWCAP);
-    // if (hwcap & HWCAP_ASIMDHP)
-    //     march += "+fp16";
-    // if (hwcap & HWCAP_ASIMDDP)
-    //     march += "+dotprod";
-#endif
-
-    if (!march.empty()) {
-        bool empty = id.empty();
-        if (!empty)
-            id += " (";
-        id += march;
-        if (!empty)
-            id += ")";
-    }
-
-    return id;
-}
-
-#define MAX_STRING_LENGTH 256
-
-typedef struct {
-    char llamafile_version[MAX_STRING_LENGTH];
-    char llama_commit[MAX_STRING_LENGTH];
-} RuntimeInfo;
-
-typedef struct {
-    char kernel_type[MAX_STRING_LENGTH];
-    char kernel_release[MAX_STRING_LENGTH];
-    char version[MAX_STRING_LENGTH];
-    char system_architecture[MAX_STRING_LENGTH];
-    char cpu[MAX_STRING_LENGTH];
-    double ram_gb;
-} SystemInfo;
-
-typedef struct {
-    char name[MAX_STRING_LENGTH];
-    char manufacturer[MAX_STRING_LENGTH];
-    double total_memory_gb;
-    int core_count;
-    double capability;
-} AcceleratorInfo;
-
-static void get_runtime_info(RuntimeInfo* info) {
-    if (info == NULL) return;
-
-    strncpy(info->llamafile_version, LLAMAFILE_VERSION_STRING, MAX_STRING_LENGTH - 1);
-    strncpy(info->llama_commit, LLAMA_COMMIT, MAX_STRING_LENGTH - 1);
-
-    fprintf(stderr, "\033[0;35m\n===== llamafile bench runtime information =====\n\n");
-    fprintf(stderr, "%-20s \033[1m%s\033[22m\n", "llamafile version:", info->llamafile_version);
-    fprintf(stderr, "%-20s %s\n", "llama.cpp commit:", info->llama_commit);
-    fprintf(stderr, "\n===============================================\n\n\033[0m");
-}
-
-static double get_mem_gb() {
-    struct sysinfo si;
-    if (sysinfo(&si)) {
-        return 0.0;
-    }
-
-    return si.totalram * si.mem_unit / 1073741824.0;
-}
-
-static void get_sys_info(SystemInfo* info) {
-    if (info == NULL) return;
-
-    struct utsname names;
-    if (uname(&names)) {
-        return;
-    }
-
-    strncpy(info->kernel_type, names.sysname, MAX_STRING_LENGTH - 1);
-    strncpy(info->kernel_release, names.release, MAX_STRING_LENGTH - 1);
-    // TODO on darwin we might want to get from systemprofiler SPSoftwareDataType os_version
-    strncpy(info->version, names.version, MAX_STRING_LENGTH - 1);
-    strncpy(info->system_architecture, names.machine, MAX_STRING_LENGTH - 1);
-
-    std::string cpu_info = get_cpu_info();
-    strncpy(info->cpu, cpu_info.c_str(), MAX_STRING_LENGTH - 1);
-
-    info->ram_gb = get_mem_gb();
-
-    fprintf(stderr, "===== system information =====\n\n");
-    fprintf(stderr, "%-20s %s\n", "Kernel Type:", info->kernel_type);
-    fprintf(stderr, "%-20s %s\n", "Kernel Release:", info->kernel_release);
-    fprintf(stderr, "%-20s %s\n", "Version:", info->version);
-    fprintf(stderr, "%-20s %s\n", "System Architecture:", info->system_architecture);
-    fprintf(stderr, "%-20s %s\n", "CPU:", info->cpu);
-    fprintf(stderr, "%-20s %.2f GiB\n", "RAM:", info->ram_gb);
-    fprintf(stderr, "\n===============================\n\n");
-}
-
-std::string exec(const char* cmd) {
-    std::array<char, 128> buffer;
-    std::string result;
-    std::unique_ptr<FILE, decltype(&pclose)> pipe(popen(cmd, "r"), pclose);
-    if (!pipe) {
-        throw std::runtime_error("popen() failed!");
-    }
-    while (fgets(buffer.data(), buffer.size(), pipe.get()) != nullptr) {
-        result += buffer.data();
-    }
-    return result;
-}
-
-// TODO move this into it's own file, sys info or something
-static void get_accelerator_info(AcceleratorInfo* info, cmd_params * params) {
-    if (info == NULL) return;
-
-    // TODO should pick the gpu based on mg flag???
-    if (FLAG_gpu >= 0 && llamafile_has_gpu()) {
-        if (llamafile_has_cuda()) {
-            int count = ggml_backend_cuda_get_device_count();
-            if (params->main_gpu == UINT_MAX) {
-                if (count == 1) {
-                    params->main_gpu = 0;
-                } else {
-                    // TODO do this for AMD as well.
-                    // prompt the user to select the main GPU
-                    fprintf(stderr, "\033[0;33mMultiple GPUs detected. Please select the main GPU to use:\n\n");
-                    for (int i = 0; i < count; i++) {
-                        struct ggml_cuda_device_properties props;
-                        ggml_backend_cuda_get_device_properties(i, &props);
-                        fprintf(stderr, "%d: %s\n", i, props.name);
-                    }
-                    fprintf(stderr, "\n\033[0m");
-                    unsigned int main_gpu;
-                    while (true) {
-                        fprintf(stderr, "Enter the number of the main GPU: ");
-                        std::string input;
-                        std::getline(std::cin, input);
-                        std::istringstream iss(input);
-                        if (iss >> main_gpu && main_gpu >= 0 && main_gpu < count) {
-                            break;
-                        }
-                        fprintf(stderr, "Invalid GPU number. Please try again.\n");
-                    }
-                    params->main_gpu = main_gpu;
-                }
-            }
-            for (int i = 0; i < count; i++) {
-                struct ggml_cuda_device_properties props;
-                ggml_backend_cuda_get_device_properties(i, &props);
-
-                if (i == params->main_gpu) {
-                    strncpy(info->name, props.name, MAX_STRING_LENGTH - 1);
-                    info->total_memory_gb = props.totalGlobalMem / 1073741824.0;
-                    info->core_count = props.multiProcessorCount;
-                    info->capability = atof(props.compute);
-                    strncpy(info->manufacturer, llamafile_has_amd_gpu() ? "AMD" : "NVIDIA", MAX_STRING_LENGTH - 1);
-                }
-
-                if (i == params->main_gpu) {
-                    fprintf(stderr, "\033[0;32m===== Active GPU (GPU %d) information =====\n\n", i);
-                } else {
-                    fprintf(stderr, "\033[0;90m===== GPU %d information =====\n\n", i);
-                }
-                fprintf(stderr, "%-26s %s\n", "GPU Name:", props.name);
-                fprintf(stderr, "%-26s %.2f GiB\n", "VRAM:", props.totalGlobalMem / 1073741824.0);
-                fprintf(stderr, "%-26s %d\n", "Streaming Multiprocessors:", props.multiProcessorCount);
-                fprintf(stderr, "%-26s %.1f\n", "CUDA Capability:", atof(props.compute));
-                fprintf(stderr, "\n============================\n\n\033[0m");
-            }
-        }
-
-        if (llamafile_has_metal()) {
-            // TODO there is probably a cleaner way of doing this. we should only need to init once.
-            // this is probably the same issue why the other thing is init multiple time too
-            struct ggml_metal_device_properties props;
-
-            std::string command = "system_profiler SPDisplaysDataType | grep \"Total Number of Cores:\" | awk '{print $5}'";
-            std::string num_cores = exec(command.c_str());
-            props.core_count = std::stoi(num_cores);
-
-            // Remove any trailing newline
-            if (!num_cores.empty() && num_cores[num_cores.length()-1] == '\n') {
-                num_cores.erase(num_cores.length()-1);
-            }
-
-            ggml_backend_t result = ggml_backend_metal_init();
-
-            ggml_backend_metal_get_device_properties(result, &props);
-
-            std::string cpu_info = get_cpu_info();
-            cpu_info += "+" + num_cores + "GPU";
-            strncpy(info->name, cpu_info.c_str(), MAX_STRING_LENGTH - 1);
-            info->total_memory_gb = props.memory;
-            info->core_count = props.core_count;
-            info->capability = props.metal_version;
-            strncpy(info->manufacturer, "Apple", MAX_STRING_LENGTH - 1);
-
-            fprintf(stderr, "\033[0;32m===== GPU information =====\n\n");
-            fprintf(stderr, "%-26s %s\n", "GPU Name:", props.name);
-            fprintf(stderr, "%-26s %.2f GiB\n", "VRAM:", props.memory);
-            fprintf(stderr, "%-26s %d\n", "Core Count:", props.core_count);
-            fprintf(stderr, "%-26s %d\n", "Metal Version:", props.metal_version);
-            fprintf(stderr, "%-26s %d\n", "GPU Family:", props.gpu_family);
-            fprintf(stderr, "%-26s %d\n", "Common GPU Family:", props.gpu_family_common);
-            fprintf(stderr, "\n============================\n\n\033[0m");
-        }
-    } else {
-        #ifdef __x86_64__
-            strncpy(info->manufacturer, get_cpu_manufacturer(), MAX_STRING_LENGTH - 1); // TODO hit registers
-        #else
-            if IsXnu() {
-                strncpy(info->manufacturer, "Apple", MAX_STRING_LENGTH - 1); // TODO hit registers
-            } else {
-                strncpy(info->manufacturer, "Unknown", MAX_STRING_LENGTH - 1); // TODO hit registers
-            }
-        #endif
-        strncpy(info->name, get_cpu_info().c_str(), MAX_STRING_LENGTH - 1);
-        info->total_memory_gb = get_mem_gb(); 
-    }
-
-    // TODO: other backends (metal)
-    // macos: get gpu cores `system_profiler -detailLevel basic SPDisplaysDataType | grep 'Total Number of Cores'`
-}
 
 // command line params
 
@@ -537,45 +85,7 @@ static std::string pair_str(const std::pair<int, int> & p) {
 }
 
 
-static const cmd_params cmd_params_defaults = {
-    /* model         */ "", // [jart] no default guessing
-    /* n_prompt      */ 0,
-    /* n_gen         */ 0,
-    /* n_batch       */ 2048,
-    /* n_ubatch      */ 512,
-    /* type_k        */ X86_HAVE(AVX512_BF16) ? GGML_TYPE_BF16 : GGML_TYPE_F16,
-    /* type_v        */ X86_HAVE(AVX512_BF16) ? GGML_TYPE_BF16 : GGML_TYPE_F16,
-    /* n_threads     */ cpu_get_num_math(),
-    /* gpu           */ LLAMAFILE_GPU_AUTO,
-    /* n_gpu_layers  */ 9999,
-    /* split_mode    */ LLAMA_SPLIT_MODE_NONE,
-    /* main_gpu      */ UINT_MAX,
-    /* no_kv_offload */ false,
-    /* flash_attn    */ false,
-    /* tensor_split  */ std::vector<float>(llama_max_devices(), 0.0f),
-    /* use_mmap      */ true,
-    /* embeddings    */ false,
-    /* numa          */ GGML_NUMA_STRATEGY_DISABLED,
-    /* reps          */ 1,
-    /* verbose       */ false,
-    /* send_results  */ false,
-    /* output_format */ MARKDOWN,
-};
 
-static void print_usage(int /* argc */, char ** argv) {
-    printf("usage: %s [options]\n", argv[0]);
-    printf("\n");
-    printf("options:\n");
-    printf("  -h, --help\n");
-    printf("  -m, --model <filename>              (default: %s)\n", cmd_params_defaults.model.c_str());
-    printf("  -g, --gpu <n>                       (default: %d)\n", cmd_params_defaults.n_gpu_layers);
-    printf("  -mg, --main-gpu <i>                 (default: %d)\n", cmd_params_defaults.main_gpu);
-    printf("  -o, --output <csv|json|md|sql>      (default: %s)\n", cmd_params_defaults.output_format);
-    printf("  -v, --verbose                       (default: %s)\n", cmd_params_defaults.verbose ? "1" : "0");
-    printf("  -y, --send-results                  (default: %s)\n", cmd_params_defaults.send_results ? "1" : "0");
-    printf("\n");
-    printf("Multiple values can be given for each parameter by separating them with ',' or by specifying the parameter multiple times.\n");
-}
 
 static ggml_type ggml_type_from_name(const std::string & s) {
     if (s == "f16") {
@@ -604,96 +114,7 @@ static ggml_type ggml_type_from_name(const std::string & s) {
 }
 
 
-static cmd_params parse_cmd_params(int argc, char ** argv) {
-    cmd_params params = cmd_params_defaults;
-    std::string arg;
-    bool invalid_param = false;
-    const std::string arg_prefix = "--";
-    const char split_delim = ',';
 
-    for (int i = 1; i < argc; i++) {
-        arg = argv[i];
-        if (arg.compare(0, arg_prefix.size(), arg_prefix) == 0) {
-            std::replace(arg.begin(), arg.end(), '_', '-');
-        }
-
-        if (arg == "-h" || arg == "--help") {
-            print_usage(argc, argv);
-            exit(0);
-        } else if (arg == "-m" || arg == "--model") {
-            if (++i >= argc) {
-                invalid_param = true;
-                break;
-            }
-            params.model = argv[i];
-        } else if (arg == "-mg" || arg == "--main-gpu") {
-            if (++i >= argc) {
-                invalid_param = true;
-                break;
-            }
-            params.main_gpu = std::stoi(argv[i]);
-        } else if (arg == "-fa" || arg == "--flash-attn") {
-            if (++i >= argc) {
-                invalid_param = true;
-                break;
-            }
-            params.flash_attn = std::stoi(argv[i]);
-        } else if (arg == "--recompile") {
-            FLAG_recompile = true;            
-        } else if (arg == "--gpu" || arg == "-g") {
-            if (++i >= argc) {
-                invalid_param = true;
-                break;
-            }
-            FLAG_gpu = llamafile_gpu_parse(argv[i]);
-            if (FLAG_gpu == LLAMAFILE_GPU_ERROR) {
-                fprintf(stderr, "error: invalid --gpu flag value: %s\n", argv[i]);
-                exit(1);
-            }
-            if (FLAG_gpu >= 0) {
-                params.n_gpu_layers = 9999;
-            } else if (FLAG_gpu == LLAMAFILE_GPU_DISABLE) {
-                params.n_gpu_layers = 0;
-            }
-        } else if (arg == "-o" || arg == "--output") {
-            if (++i >= argc) {
-                invalid_param = true;
-                break;
-            }
-            if (argv[i] == std::string("csv")) {
-                params.output_format = CSV;
-            } else if (argv[i] == std::string("json")) {
-                params.output_format = JSON;
-            } else if (argv[i] == std::string("md")) {
-                params.output_format = MARKDOWN;
-            } else if (argv[i] == std::string("sql")) {
-                params.output_format = SQL;
-            } else {
-                invalid_param = true;
-                break;
-            }
-        } else if (arg == "-v" || arg == "--verbose") {
-            params.verbose = true;
-        } else if (arg == "-y" || arg == "--send-results") {
-            params.send_results = true;
-        } else if (arg[0] == '-') {
-            invalid_param = true;
-            break;
-        } else {
-            params.model = argv[i];
-        }
-    }
-    if (invalid_param) {
-        fprintf(stderr, "%s: invalid parameter for argument: %s\n", program_invocation_name, arg.c_str());
-        exit(1);
-    }
-    if (params.model.empty()) {
-        fprintf(stderr, "%s: missing operand\n", program_invocation_name);
-        exit(1);
-    }
-
-    return params;
-}
 
 struct time_interval {
     uint64_t start;
@@ -836,7 +257,7 @@ struct test {
             llamafile_govern();
 
             time_interval interval;
-            interval.start = get_time_ns();
+            interval.start = utils::get_time_ns();
             interval.end = 0;
             test_intervals.push_back(interval);
 
@@ -847,7 +268,7 @@ struct test {
                 test_gen();
             }
 
-            test_intervals.back().end = get_time_ns();
+            test_intervals.back().end = utils::get_time_ns();
         }
         monitor_result = pwr_sampler->stop();
 
@@ -865,7 +286,7 @@ struct test {
         int n_processed = 0;
 
         time_interval interval;
-        interval.start = get_time_ns();
+        interval.start = utils::get_time_ns();
         interval.end = 0;
         prompt_intervals.push_back(interval);
 
@@ -882,7 +303,7 @@ struct test {
 
         llama_synchronize(ctx);
 
-        prompt_intervals.back().end = get_time_ns();
+        prompt_intervals.back().end = utils::get_time_ns();
     }
 
     void test_gen() {
@@ -894,7 +315,7 @@ struct test {
         llama_token token = llama_add_bos_token(model) ? llama_token_bos(model) : std::rand() % n_vocab;
 
         time_interval interval;
-        interval.start = get_time_ns();
+        interval.start = utils::get_time_ns();
         interval.end = 0;
         gen_intervals.push_back(interval);
 
@@ -902,14 +323,14 @@ struct test {
             llama_decode(ctx, llama_batch_get_one(&token, 1, n_prompt + i, 0));
             llama_synchronize(ctx);
             if (i == 0) {
-                uint64_t ttft = get_time_ns() - test_intervals.back().start;
+                uint64_t ttft = utils::get_time_ns() - test_intervals.back().start;
                 time_to_first_token.push_back(ttft);
             }
             token = std::rand() % n_vocab;
             t_gen = i + 1;
         }
 
-        gen_intervals.back().end = get_time_ns();
+        gen_intervals.back().end = utils::get_time_ns();
     }
 
     std::vector<uint64_t> get_samples_ns(token_metric metric = TOTAL_TPS) const {
@@ -930,12 +351,12 @@ struct test {
 
     uint64_t avg_ns(token_metric metric = TOTAL_TPS) const {
         std::vector<uint64_t> samples_ns = get_samples_ns(metric);
-        return ::avg(samples_ns);
+        return utils::avg(samples_ns);
     }
 
     uint64_t stdev_ns(token_metric metric = TOTAL_TPS) const {
         std::vector<uint64_t> samples_ns = get_samples_ns(metric);
-        return ::stdev(samples_ns);
+        return utils::stdev(samples_ns);
     }
 
     float get_power() const {
@@ -969,11 +390,11 @@ struct test {
     }
 
     double avg_ts(token_metric metric = TOTAL_TPS) const {
-        return ::avg(get_ts(metric));
+        return utils::avg(get_ts(metric));
     }
 
     double stdev_ts(token_metric metric = TOTAL_TPS) const {
-        return ::stdev(get_ts(metric));
+        return utils::stdev(get_ts(metric));
     }
 
     double get_tps_watt(token_metric metric = TOTAL_TPS) const {
@@ -991,7 +412,7 @@ struct test {
         if (time_to_first_token.empty()) {
             return 0.0;
         }
-        return avg(time_to_first_token);
+        return utils::avg(time_to_first_token);
     }
 
     static std::string get_backend() {
@@ -1208,14 +629,14 @@ struct csv_printer : public printer {
 
     void print_header(const cmd_params & params, AcceleratorInfo accelerator_info, RuntimeInfo runtime_info, SystemInfo sys_info) override  {
         std::vector<std::string> fields = test::get_fields();
-        writer->write("%s\n", join(fields, ",").c_str());
+        writer->write("%s\n", utils::join(fields, ",").c_str());
         (void) params;
     }
 
     void print_test(const test & t) override {
         std::vector<std::string> values = t.get_values();
         std::transform(values.begin(), values.end(), values.begin(), escape_csv);
-        writer->write("%s\n", join(values, ",").c_str());
+        writer->write("%s\n", utils::join(values, ",").c_str());
     }
 };
 
@@ -1301,8 +722,8 @@ void print_header(const cmd_params & params, AcceleratorInfo gpu_info, RuntimeIn
         }
         writer->write("    {\n");
         print_fields(test::get_fields(), t.get_values());
-        writer->write("      \"samples_ns\": [ %s ],\n", join(t.get_samples_ns(), ", ").c_str());
-        writer->write("      \"samples_ts\": [ %s ]\n", join(t.get_ts(), ", ").c_str());
+        writer->write("      \"samples_ns\": [ %s ],\n", utils::join(t.get_samples_ns(), ", ").c_str());
+        writer->write("      \"samples_ts\": [ %s ]\n", utils::join(t.get_ts(), ", ").c_str());
         writer->write("    }");
         writer->flush();
     }
@@ -1563,7 +984,7 @@ struct sql_printer : public printer {
     }
 
     void print_test(const test & t) override {
-        writer->write("INSERT INTO test (%s) ", join(test::get_fields(), ", ").c_str());
+        writer->write("INSERT INTO test (%s) ", utils::join(test::get_fields(), ", ").c_str());
         writer->write("VALUES (");
         std::vector<std::string> values = t.get_values();
         for (size_t i = 0; i < values.size(); i++) {
@@ -1640,114 +1061,6 @@ std::string getUserConfirmation() {
 
 __attribute__((__constructor__(101))) static void init(void) {
     FLAG_gpu = LLAMAFILE_GPU_AUTO;
-}
-
-const char* digits[10] = {
-    // 0
-    " ██████ \n"
-    "██    ██\n"
-    "██    ██\n"
-    "██    ██\n"
-    " ██████ \n",
-    
-    // 1
-    " ██ \n"
-    "███ \n"
-    " ██ \n"
-    " ██ \n"
-    " ██ \n",
-    
-    // 2
-    "██████  \n"
-    "     ██ \n"
-    " █████  \n"
-    "██      \n"
-    "███████ \n",
-    
-    // 3
-    "██████  \n"
-    "     ██ \n"
-    " █████  \n"
-    "     ██ \n"
-    "██████  \n",
-    
-    // 4
-    "██   ██ \n"
-    "██   ██ \n"
-    "███████ \n"
-    "     ██ \n"
-    "     ██ \n",
-    
-    // 5
-    "███████ \n"
-    "██      \n"
-    "██████  \n"
-    "     ██ \n"
-    "██████  \n",
-    
-    // 6
-    " ██████ \n"
-    "██      \n"
-    "███████ \n"
-    "██    ██\n"
-    " ██████ \n",
-    
-    // 7
-    "███████ \n"
-    "     ██ \n"
-    "    ██  \n"
-    "   ██   \n"
-    "  ██    \n",
-    
-    // 8
-    " █████  \n"
-    "██   ██ \n"
-    " █████  \n"
-    "██   ██ \n"
-    " █████  \n",
-    
-    // 9
-    " ██████ \n"
-    "██    ██\n"
-    " ███████\n"
-    "      ██\n"
-    " ██████ \n"
-};
-
-void printLargeNumber(int number) {
-    // Convert number to string
-    std::string num_str = std::to_string(number);
-    
-    // Handle negative numbers
-    bool is_negative = number < 0;
-    if (is_negative) {
-        num_str = num_str.substr(1); // Remove the minus sign for processing
-    }
-
-    // Print each row
-    for (int row = 0; row < 5; row++) {
-        for (char digit : num_str) {
-            int d = digit - '0';  // Convert char to int
-            
-            // Find the start and end of the current row in the digit's string
-            const char* ptr = digits[d];
-            int line_start = 0;
-            for (int i = 0; i < row; i++) {
-                while (ptr[line_start] != '\n') line_start++;
-                line_start++; // Skip the newline
-            }
-            
-            int line_end = line_start;
-            while (ptr[line_end] && ptr[line_end] != '\n') line_end++;
-            
-            // Print the current row
-            for (int i = line_start; i < line_end; i++) {
-                std::cout << ptr[i];
-            }
-            std::cout << " "; // Space between digits
-        }
-        std::cout << "\n";
-    }
 }
 
 int main(int argc, char ** argv) {
@@ -1997,7 +1310,7 @@ int main(int argc, char ** argv) {
             // calculate the geometric mean of the performance values for a score
             double score = pow(avg_prompt_tps * avg_gen_tps * (1000 / avg_ttft_ms), 1.0 / 3.0) * 10;
             printf("\n\033[1;35mYour LocalScore:\n\n", score);
-            printLargeNumber((int)score);
+            ascii_display::printLargeNumber((int)score);
             printf("\033[0m\n");
             printf("- Prompt Processing: \t %.2f tok/s\n", avg_prompt_tps);
             printf("- Token Generation: \t %.2f tok/s\n", avg_gen_tps);
