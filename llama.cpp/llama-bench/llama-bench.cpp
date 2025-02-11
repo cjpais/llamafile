@@ -235,8 +235,7 @@ void print_header(const cmd_params & params, AcceleratorInfo gpu_info, RuntimeIn
         }
         writer->write("    {\n");
         print_fields(test::get_fields(), t.get_values());
-        writer->write("      \"samples_ns\": [ %s ],\n", utils::join(t.get_samples_ns(), ", ").c_str());
-        writer->write("      \"samples_ts\": [ %s ]\n", utils::join(t.get_ts(), ", ").c_str());
+        writer->write("      \"samples_ns\": [ %s ]\n", utils::join(t.get_samples_ns(), ", ").c_str());
         writer->write("    }");
         writer->flush();
     }
@@ -582,6 +581,48 @@ __attribute__((__constructor__(101))) static void init(void) {
     FLAG_gpu = LLAMAFILE_GPU_AUTO;
 }
 
+static void warmup_run(llama_model *model, llama_context *ctx, cmd_params inst) {
+    printf("Warming up...\n");
+    int n_batch = inst.n_batch;
+    int n_processed = 0;
+    int n_prompt = inst.n_prompt;
+    int n_gen = inst.n_gen;
+
+    const int32_t n_vocab = llama_n_vocab(model);
+    std::vector<llama_token> tokens(n_batch);
+
+    llama_kv_cache_clear(ctx);
+
+    // warmup prompt
+    while (n_processed < n_prompt) {
+        int n_tokens = std::min(n_prompt - n_processed, n_batch);
+        tokens[0] = n_processed == 0 && llama_add_bos_token(model)
+                        ? llama_token_bos(model)
+                        : std::rand() % n_vocab;
+        for (int i = 1; i < n_tokens; i++) {
+            tokens[i] = std::rand() % n_vocab;
+        }
+        llama_decode(
+            ctx, llama_batch_get_one(tokens.data(), n_tokens, n_processed, 0));
+        n_processed += n_tokens;
+    }
+
+    llama_synchronize(ctx);
+
+    // warmup gen
+    llama_token token = llama_add_bos_token(model) ? llama_token_bos(model)
+                                                   : std::rand() % n_vocab;
+    for (int i = 0; i < n_gen; i++) {
+        llama_decode(ctx, llama_batch_get_one(&token, 1, n_prompt + i, 0));
+        llama_synchronize(ctx);
+        token = std::rand() % n_vocab;
+    }
+
+    llama_free(ctx);
+
+    printf("Warmup complete.\n");
+}
+
 int main(int argc, char ** argv) {
     ShowCrashReports();
 
@@ -648,32 +689,39 @@ int main(int argc, char ** argv) {
             exit(1);
     }
     p->set_file_output(stdout);
-    p->print_header(params, accelerator_info, runtime_info, sys_info);
 
-    llama_model * lmodel = nullptr;
 
     PowerSampler * sampler = getPowerSampler(100, main_gpu);
-
     pthread_t print_thread;
 
+    cmd_params inst = params;
+    inst.n_prompt = 1024;
+    inst.n_gen = 16;
+
+    llama_model * lmodel = llama_load_model_from_file(inst.model.c_str(), inst.to_llama_mparams());
+    if (lmodel == NULL) {
+        fprintf(stderr, "%s: error: failed to load model '%s'\n", __func__, inst.model.c_str());
+        return 1;
+    }
+    llama_context_params cparams = inst.to_llama_cparams();
+    cparams.n_ctx = inst.n_prompt + inst.n_gen;
+    llama_context * ctx = llama_new_context_with_model(lmodel, cparams);
+    if (ctx == NULL) {
+        fprintf(stderr, "%s: error: failed to create context with model '%s'\n", __func__, inst.model.c_str());
+        llama_free_model(lmodel);
+        return 1;
+    }
+    warmup_run(lmodel, ctx, inst);
+
+    p->print_header(params, accelerator_info, runtime_info, sys_info);
     for (const auto & test_cfg : baseline_tests) {
-        cmd_params inst = params;
         inst.n_prompt = test_cfg.n_prompt;
         inst.n_gen = test_cfg.n_gen;
 
-        if (!lmodel) {
-            lmodel = llama_load_model_from_file(inst.model.c_str(), inst.to_llama_mparams());
-            if (lmodel == NULL) {
-                fprintf(stderr, "%s: error: failed to load model '%s'\n", __func__, inst.model.c_str());
-                return 1;
-            }
-        }
-
-        llama_context_params cparams = inst.to_llama_cparams();
+        cparams = inst.to_llama_cparams();
         cparams.n_ctx = test_cfg.n_prompt + test_cfg.n_gen;
 
-
-        llama_context * ctx = llama_new_context_with_model(lmodel, cparams);
+        ctx = llama_new_context_with_model(lmodel, cparams);
         if (ctx == NULL) {
             fprintf(stderr, "%s: error: failed to create context with model '%s'\n", __func__, inst.model.c_str());
             llama_free_model(lmodel);
@@ -694,7 +742,7 @@ int main(int argc, char ** argv) {
         pthread_join(update_thread, NULL);
         req_printer->print_test(t);
 
-        llama_print_timings(ctx);
+        // llama_print_timings(ctx);
 
         llama_free(ctx);
     }
@@ -789,12 +837,13 @@ int main(int argc, char ** argv) {
     // TODO make this a func or something, also retry if it fails to send. 3 times. backoff
     if (user_cnf == "yes" || user_cnf == "y" || params.send_results) {
         printf("\nSending results...\n");
-        Response response = POST("https://llamascore.vercel.app/api/store/results", req_payload, {
+        Response response = POST("https://mbp.tail73f30.ts.net/api/results", req_payload, {
             {"Content-Type", "application/json"}
         });
 
         if (response.status == 200) {
             // printf("Results sent!\n");
+            printf("Results body: %s\n", response.body.c_str());
 
             // parse the response json
             std::pair<Json::Status, Json> json =

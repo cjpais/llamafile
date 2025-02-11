@@ -23,7 +23,7 @@ static const cmd_params cmd_params_defaults = {
     /* use_mmap      */ true,
     /* embeddings    */ false,
     /* numa          */ GGML_NUMA_STRATEGY_DISABLED,
-    /* reps          */ 2,
+    /* reps          */ 1,
     /* verbose       */ false,
     /* send_results  */ false,
     /* output_format */ MARKDOWN,

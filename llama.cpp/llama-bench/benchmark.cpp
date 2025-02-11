@@ -62,23 +62,12 @@ test::test(const cmd_params &inst, const llama_model *lmodel,
 }
 
 void test::run() {
-    llama_kv_cache_clear(ctx);
-
-    // warmup run
-    // TODO: add warmup run, to lower stddev
-    // if (n_prompt > 0) {
-    //     test_prompt();
-    // }
-    // if (n_gen > 0) {
-    //     test_gen();
-    // }
 
     // run the test for however many repetitions specified
     pwr_sampler->start();
     for (int i = 0; i < reps; i++) {
         curr_run = i;
         llama_kv_cache_clear(ctx);
-        llamafile_govern();
 
         time_interval interval;
         interval.start = utils::get_time_ns();
