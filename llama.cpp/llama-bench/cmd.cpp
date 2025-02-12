@@ -25,7 +25,7 @@ static const cmd_params cmd_params_defaults = {
     /* numa          */ GGML_NUMA_STRATEGY_DISABLED,
     /* reps          */ 1,
     /* verbose       */ false,
-    /* send_results  */ false,
+    /* send_results  */ SEND_ASK,
     /* output_format */ MARKDOWN,
 };
 
@@ -136,7 +136,11 @@ cmd_params parse_cmd_params(int argc, char ** argv) {
         } else if (arg == "-v" || arg == "--verbose") {
             params.verbose = true;
         } else if (arg == "-y" || arg == "--send-results") {
-            params.send_results = true;
+            params.send_results = SEND_YES;
+        } else if (arg == "-n" || arg == "--no-send-results") {
+            params.send_results = SEND_NO;
+        } else if (arg == "-e" || arg == "--extended") {
+            params.reps = 4;
         } else if (arg[0] == '-') {
             invalid_param = true;
             break;
@@ -176,5 +180,7 @@ void print_usage(int /* argc */, char ** argv) {
     printf("  -mg, --main-gpu <i>                        (default: %d)\n", cmd_params_defaults.main_gpu);
     printf("  -o, --output <csv|json|md|sql>             (default: %s)\n", output_format_str(cmd_params_defaults.output_format));
     printf("  -v, --verbose                              (default: %s)\n", cmd_params_defaults.verbose ? "1" : "0");
-    printf("  -y, --send-results                         (default: %s)\n", cmd_params_defaults.send_results ? "1" : "0");
+    printf("  -y, --send-results                         always send results to public database\n");
+    printf("  -n, --no-send-results                      never send results to public database\n");
+    printf("  -e, --extended                             run extended benchmark (4 reps) (default: %s)\n", cmd_params_defaults.reps == 4 ? "1" : "0");
 }

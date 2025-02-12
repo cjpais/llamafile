@@ -5,6 +5,7 @@
 #include "llama.cpp/llama.h"
 
 enum output_formats {CSV, JSON, MARKDOWN, SQL};
+enum send_results_mode {SEND_ASK, SEND_YES, SEND_NO};
 
 struct cmd_params {
     std::string model;
@@ -27,7 +28,7 @@ struct cmd_params {
     ggml_numa_strategy numa;
     int reps;
     bool verbose;
-    bool send_results;
+    send_results_mode send_results;
     output_formats output_format;
 
     llama_model_params to_llama_mparams() const;

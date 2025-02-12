@@ -239,7 +239,7 @@ void get_accelerator_info(AcceleratorInfo* info, cmd_params * params) {
             for (int i = 0; i < count; i++) {
                 struct ggml_cuda_device_properties props;
                 ggml_backend_cuda_get_device_properties(i, &props);
-                    printf("Total memory: %lld bytes\n", props.totalGlobalMem);
+                    // printf("Total memory: %lld bytes\n", props.totalGlobalMem);
                 if (i == params->main_gpu) {
                     strncpy(info->name, props.name, MAX_STRING_LENGTH - 1);
 

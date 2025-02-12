@@ -316,31 +316,56 @@ struct markdown_printer : public printer {
         return field;
     }
 
+    int calculate_total_width() const {
+        int total_width = 0;
+        for (const auto & field : fields) {
+            int width = get_field_width(field);
+            if (width < 0) {
+                width = std::abs(width);
+            }
+            total_width += width;
+        }
+        total_width += fields.size() * 3 + 1;
+        return total_width;
+    }    
+
     void print_header(const cmd_params & params, AcceleratorInfo gpu_info, RuntimeInfo runtime_info, SystemInfo sys_info) override {
-        // select fields to print
-        // fields.emplace_back("cpu_info"); // [jart]
-        // fields.emplace_back("gpu_info"); // [jart]
-        // fields.emplace_back("model_filename");
-        // fields.emplace_back("model_type");
-        // fields.emplace_back("model");
         fields.emplace_back("test");
         fields.emplace_back("run number");
-        // fields.emplace_back("size"); // [jart]
-        // fields.emplace_back("params"); // [jart]
-        // fields.emplace_back("backend"); // [jart]
         fields.emplace_back("avg time"); // [jart]
         fields.emplace_back("power");
-        // fields.emplace_back("vram");
-        bool is_cpu_backend = test::get_backend() == "CPU" || test::get_backend() == "BLAS";
-        if (!is_cpu_backend) {
-            fields.emplace_back("n_gpu_layers");
-        }
         fields.emplace_back("tokens processed");
         fields.emplace_back("pp t/s");
         fields.emplace_back("tg t/s");
-        fields.emplace_back("pp t/s/watt");
-        fields.emplace_back("tg t/s/watt");
+        // fields.emplace_back("pp t/s/watt");
+        // fields.emplace_back("tg t/s/watt");
         fields.emplace_back("ttft");
+
+        int total_width = calculate_total_width();
+
+        std::string border(total_width, '-');
+        border[0] = '+';
+        border[total_width-1] = '+';
+
+        // Create the GPU info string and calculate padding
+        char gpu_info_str[256];
+        int content_length = snprintf(gpu_info_str, sizeof(gpu_info_str), 
+                                    "%s - %.2f GiB", 
+                                    gpu_info.name, 
+                                    gpu_info.total_memory_gb);
+
+        if (content_length < 0 || static_cast<size_t>(content_length + 2) > total_width) {
+            throw std::runtime_error("GPU info string too long for display width");
+        }
+        int padding = (total_width - 2 - content_length) / 2;
+
+
+        writer->write("%s\n", border.c_str());
+        writer->write("|%*s%s%*s|\n",
+            padding, "", 
+            gpu_info_str,
+            padding + (content_length % 2 == 0 ? 0 : 1), "");
+        writer->write("%s\n", border.c_str());
 
         writer->write("|");
         for (const auto & field : fields) {
@@ -350,7 +375,7 @@ struct markdown_printer : public printer {
         writer->write("|");
         for (const auto & field : fields) {
             int width = get_field_width(field);
-            writer->write(" %s%s |", std::string(std::abs(width) - 1, '-').c_str(), width > 0 ? ":" : "-");
+            writer->write(" %s |", std::string(std::abs(width), '-').c_str());
         }
         writer->write("\n");
     }
@@ -394,7 +419,18 @@ struct markdown_printer : public printer {
                 value = buf;
             } else if (field == "tg t/s") {
                 snprintf(buf, sizeof(buf), "%.2f", t.avg_ts(GEN_TPS));
-
+                if (t.gen_intervals.size() != 0) {
+                    time_interval curr_interval = t.gen_intervals[t.curr_run];
+                
+                    if (curr_interval.end == 0) {
+                        // get the live tps instead of avg
+                        uint64_t elapsed_ns = utils::get_time_ns() - curr_interval.start;
+                        float elapsed_s = elapsed_ns / 1e9;
+                        float tps = t.t_gen / elapsed_s;
+                        snprintf(buf, sizeof(buf), "%.2f", tps);
+                    }
+                }
+            
                 value = buf;
             } else if (field == "tokens processed") {
                 int num_generated = t.t_gen + (t.curr_run * t.n_gen);
@@ -470,7 +506,11 @@ struct markdown_printer : public printer {
     }
 
     void print_footer() override {
-        // writer->write("\nbuild: %s (%d)\n", test::build_commit.c_str(), test::build_number); // [jart]
+        int total_width = calculate_total_width();
+        std::string border(total_width, '-');
+        border[0] = '+';
+        border[total_width-1] = '+';
+        writer->write("%s\n", border.c_str());
     }
 };
 
@@ -582,7 +622,7 @@ __attribute__((__constructor__(101))) static void init(void) {
 }
 
 static void warmup_run(llama_model *model, llama_context *ctx, cmd_params inst) {
-    printf("Warming up...\n");
+    printf("Warming up... ");
     int n_batch = inst.n_batch;
     int n_processed = 0;
     int n_prompt = inst.n_prompt;
@@ -620,7 +660,7 @@ static void warmup_run(llama_model *model, llama_context *ctx, cmd_params inst) 
 
     llama_free(ctx);
 
-    printf("Warmup complete.\n");
+    printf("Warmup complete.\n\n");
 }
 
 int main(int argc, char ** argv) {
@@ -815,12 +855,16 @@ int main(int argc, char ** argv) {
 
             // calculate the geometric mean of the performance values for a score
             double score = pow(avg_prompt_tps * avg_gen_tps * (1000 / avg_ttft_ms), 1.0 / 3.0) * 10;
-            printf("\n\033[1;35mYour LocalScore:\n\n", score);
+            // printf("\n\033[1;35mYour LocalScore:\n\n", score);
+            printf("\n\033[1;35m");
+            ascii_display::print_logo();
+            printf("\n");
             ascii_display::printLargeNumber((int)score);
             printf("\033[0m\n");
-            printf("- Prompt Processing: \t %.2f tok/s\n", avg_prompt_tps);
-            printf("- Token Generation: \t %.2f tok/s\n", avg_gen_tps);
-            printf("- Time to First Token:\t %.2f ms\n", avg_ttft_ms);
+            printf("\033[32mToken Generation: \t \033[1;32m%.2f\033[0m \033[3;32mtok/s\033[0m\n", avg_gen_tps);
+            printf("\033[36mPrompt Processing: \t \033[1;36m%.2f\033[0m \033[3;36mtok/s\033[0m\n", avg_prompt_tps);
+            printf("\033[33mTime to First Token:\t \033[1;33m%.2f\033[0m \033[3;33mms\033[0m\n", avg_ttft_ms);
+            printf("\033[0m");
         } else {
             printf("No valid results found in the array\n");
         }
@@ -830,12 +874,12 @@ int main(int argc, char ** argv) {
 
     // Ask user for confirmation before sending the data
     std::string user_cnf;
-    if (!params.send_results) {
+    if (params.send_results == SEND_ASK) {
         user_cnf = getUserConfirmation();
     }
 
     // TODO make this a func or something, also retry if it fails to send. 3 times. backoff
-    if (user_cnf == "yes" || user_cnf == "y" || params.send_results) {
+    if (user_cnf == "yes" || user_cnf == "y" || params.send_results == SEND_YES) {
         printf("\nSending results...\n");
         Response response = POST("https://mbp.tail73f30.ts.net/api/results", req_payload, {
             {"Content-Type", "application/json"}
@@ -858,14 +902,14 @@ int main(int argc, char ** argv) {
                 return 1;
             }
 
-            if (json.second["id"].isString()) {
-                printf("Result Link: https://llamascore.vercel.app/result/%s\n", json.second["id"].getString().c_str());
+            if (json.second["id"].isNumber()) {
+                printf("Result Link: https://llamascore.vercel.app/result/%d\n", (int)json.second["id"].getNumber());
             }
         } else {
             printf("Error sending data to the public database. Status: %d\n", response.status);
         }
     } else {
-        printf("\nData not sent to the public database.\n");
+        printf("\nResults Not Submitted.\n");
     }
 
     return 0;
