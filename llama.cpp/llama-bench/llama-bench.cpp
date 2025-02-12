@@ -887,7 +887,7 @@ int main(int argc, char ** argv) {
 
         if (response.status == 200) {
             // printf("Results sent!\n");
-            printf("Results body: %s\n", response.body.c_str());
+            // printf("Results body: %s\n", response.body.c_str());
 
             // parse the response json
             std::pair<Json::Status, Json> json =

@@ -340,7 +340,7 @@ static Response DecodeHttpResponse(int sock, SSLContext* ssl_ctx, size_t initial
     InitHttpMessage(&msg, kHttpResponse);
     
     enum class ParseState {
-        Headers,
+        Headers = 0,
         Body,
         BodyLengthed,
         BodyChunked
@@ -358,6 +358,7 @@ static Response DecodeHttpResponse(int sock, SSLContext* ssl_ctx, size_t initial
 
     size_t header_length = 0;
     size_t payload_length = 0;
+    bool headers_parsed = false;
     
     while (true) {
         if (current_pos == buffer.size()) {
@@ -380,72 +381,82 @@ static Response DecodeHttpResponse(int sock, SSLContext* ssl_ctx, size_t initial
         
         current_pos += bytes_read;
         
-        switch (state) {
-            case ParseState::Headers: {
-                int rc = ParseHttpMessage(&msg, buffer.data(), current_pos, buffer.size());
-                if (rc == -1) {
-                    throw std::runtime_error("Invalid HTTP message");
-                }
-                if (rc > 0) {
-                    header_length = rc;
-                    response.status = msg.status;
-                    response.raw_headers = std::string(buffer.data(), header_length);
-                    
-                    if (hasHeader(msg, kHttpTransferEncoding) && 
-                        !headerEqualCase(msg, kHttpTransferEncoding, "identity", buffer.data())) {
-                        if (!headerEqualCase(msg, kHttpTransferEncoding, "chunked", buffer.data())) {
-                            throw std::runtime_error("Unsupported transfer encoding");
-                        }
-                        state = ParseState::BodyChunked;
-                        memset(&chunker, 0, sizeof(chunker));
-                    } else if (hasHeader(msg, kHttpContentLength)) {
-                        int content_length = ParseContentLength(
-                            getHeaderData(msg, kHttpContentLength, buffer.data()),
-                            getHeaderLength(msg, kHttpContentLength));
-                        if (content_length == -1) {
-                            throw std::runtime_error("Invalid content length");
-                        }
-                        response.content_length = content_length;
-                        state = ParseState::BodyLengthed;
-                    } else {
-                        state = ParseState::Body;
+        if (!headers_parsed) {
+            int rc = ParseHttpMessage(&msg, buffer.data(), current_pos, buffer.size());
+            if (rc == -1) {
+                throw std::runtime_error("Invalid HTTP message");
+            }
+            if (rc > 0) {
+                header_length = rc;
+                response.status = msg.status;
+                response.raw_headers = std::string(buffer.data(), header_length);
+                headers_parsed = true;
+                
+                if (hasHeader(msg, kHttpTransferEncoding) && 
+                    !headerEqualCase(msg, kHttpTransferEncoding, "identity", buffer.data())) {
+                    if (!headerEqualCase(msg, kHttpTransferEncoding, "chunked", buffer.data())) {
+                        throw std::runtime_error("Unsupported transfer encoding");
                     }
+                    state = ParseState::BodyChunked;
+                    memset(&chunker, 0, sizeof(chunker));
+                } else if (hasHeader(msg, kHttpContentLength)) {
+                    int content_length = ParseContentLength(
+                        getHeaderData(msg, kHttpContentLength, buffer.data()),
+                        getHeaderLength(msg, kHttpContentLength));
+                    if (content_length == -1) {
+                        throw std::runtime_error("Invalid content length");
+                    }
+                    response.content_length = content_length;
+                    state = ParseState::BodyLengthed;
+                } else {
+                    state = ParseState::Body;
                 }
-                break;
+                
+                // Process any body data that came with the headers
+                if (current_pos > header_length) {
+                    goto process_body;
+                }
+                continue;
             }
-            
-            case ParseState::Body: {
-                response.body.append(buffer.data() + header_length, 
-                                   current_pos - header_length);
-                break;
-            }
-            
-            case ParseState::BodyLengthed: {
-                size_t remaining = response.content_length - response.body.size();
-                size_t to_copy = std::min(remaining, 
-                                        current_pos - header_length - response.body.size());
-                response.body.append(buffer.data() + header_length + response.body.size(), 
-                                   to_copy);
-                if (response.body.size() >= response.content_length) {
-                    return response;
+        } else {
+process_body:
+            switch (state) {
+                case ParseState::Body: {
+                    response.body.append(buffer.data() + header_length, 
+                                       current_pos - header_length);
+                    break;
                 }
-                break;
-            }
-            
-            case ParseState::BodyChunked: {
-                size_t chunk_length;
-                int rc = Unchunk(&chunker, 
-                               buffer.data() + header_length,
-                               current_pos - header_length, 
-                               &chunk_length);
-                if (rc == -1) {
-                    throw std::runtime_error("Invalid chunk encoding");
+                
+                case ParseState::BodyLengthed: {
+                    size_t remaining = response.content_length - response.body.size();
+                    size_t to_copy = std::min(remaining, 
+                                            current_pos - header_length - response.body.size());
+                    response.body.append(buffer.data() + header_length + response.body.size(), 
+                                       to_copy);
+                    if (response.body.size() >= response.content_length) {
+                        return response;
+                    }
+                    break;
                 }
-                if (rc > 0) {
-                    response.body.append(buffer.data() + header_length, chunk_length);
-                    return response;
+                
+                case ParseState::BodyChunked: {
+                    size_t chunk_length;
+                    int rc = Unchunk(&chunker, 
+                                   buffer.data() + header_length,
+                                   current_pos - header_length, 
+                                   &chunk_length);
+                    if (rc == -1) {
+                        throw std::runtime_error("Invalid chunk encoding");
+                    }
+                    if (rc > 0) {
+                        response.body.append(buffer.data() + header_length, chunk_length);
+                        return response;
+                    }
+                    break;
                 }
-                break;
+                
+                default:
+                    break;
             }
         }
     }
