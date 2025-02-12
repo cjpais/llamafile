@@ -419,7 +419,7 @@ struct markdown_printer : public printer {
                 value = buf;
             } else if (field == "tg t/s") {
                 snprintf(buf, sizeof(buf), "%.2f", t.avg_ts(GEN_TPS));
-                if (t.gen_intervals.size() != 0) {
+                if (!t.gen_intervals.empty() && t.curr_run < t.gen_intervals.size()) {
                     time_interval curr_interval = t.gen_intervals[t.curr_run];
                 
                     if (curr_interval.end == 0) {

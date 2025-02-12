@@ -67,6 +67,8 @@ void test::run() {
     pwr_sampler->start();
     for (int i = 0; i < reps; i++) {
         curr_run = i;
+        t_processed = 0;
+        t_gen = 0;
         llama_kv_cache_clear(ctx);
 
         time_interval interval;
