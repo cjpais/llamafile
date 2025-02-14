@@ -2,25 +2,6 @@
 
 typedef void* nvmlDevice_t;
 
-typedef struct {
-  unsigned int pid;
-  unsigned long long usedGpuMemory;
-} nvmlProcessInfo_v1_t;
-
-typedef struct {
-  unsigned int pid;
-  unsigned long long usedGpuMemory;
-  unsigned int gpuInstanceId;
-  unsigned int computeInstanceId;
-} nvmlProcessInfo_v2_t;
-
-typedef struct {
-  unsigned int pid;
-  unsigned long long usedGpuMemory;
-  unsigned int gpuInstanceId;
-  unsigned int computeInstanceId;
-} nvmlProcessInfo_v3_t;
-
 bool nvml_init();
 
 bool nvml_get_device(nvmlDevice_t *device, unsigned int index);
