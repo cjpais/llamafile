@@ -1,4 +1,5 @@
 #include "system.h"
+#include <cstdio>
 #include <sys/utsname.h>
 #include <sys/sysinfo.h>
 #include <cosmo.h>
@@ -209,33 +210,6 @@ void get_accelerator_info(AcceleratorInfo* info, cmd_params * params) {
     if (FLAG_gpu >= 0 && llamafile_has_gpu()) {
         if (llamafile_has_cuda()) {
             int count = ggml_backend_cuda_get_device_count();
-            if (params->main_gpu == UINT_MAX) {
-                if (count == 1) {
-                    params->main_gpu = 0;
-                } else {
-                    // TODO do this for AMD as well.
-                    // prompt the user to select the main GPU
-                    fprintf(stderr, "\033[0;33mMultiple GPUs detected. Please select the main GPU to use:\n\n");
-                    for (int i = 0; i < count; i++) {
-                        struct ggml_cuda_device_properties props;
-                        ggml_backend_cuda_get_device_properties(i, &props);
-                        fprintf(stderr, "%d: %s\n", i, props.name);
-                    }
-                    fprintf(stderr, "\n\033[0m");
-                    unsigned int main_gpu;
-                    while (true) {
-                        fprintf(stderr, "Enter the number of the main GPU: ");
-                        std::string input;
-                        std::getline(std::cin, input);
-                        std::istringstream iss(input);
-                        if (iss >> main_gpu && main_gpu >= 0 && main_gpu < count) {
-                            break;
-                        }
-                        fprintf(stderr, "Invalid GPU number. Please try again.\n");
-                    }
-                    params->main_gpu = main_gpu;
-                }
-            }
             for (int i = 0; i < count; i++) {
                 struct ggml_cuda_device_properties props;
                 ggml_backend_cuda_get_device_properties(i, &props);
@@ -313,4 +287,46 @@ void get_accelerator_info(AcceleratorInfo* info, cmd_params * params) {
 
     // TODO: other backends (metal)
     // macos: get gpu cores `system_profiler -detailLevel basic SPDisplaysDataType | grep 'Total Number of Cores'`
+}
+
+void list_available_accelerators() {
+    if (llamafile_has_gpu()) {
+        if (llamafile_has_metal()) {
+            fprintf(stderr, "Apple Metal\n");
+        } else if (llamafile_has_cuda()) {
+            int count = ggml_backend_cuda_get_device_count();
+            fprintf(stderr, "\n\033[0;32m==================== Available GPUs ====================\n\n");
+            for (int i = 0; i < count; i++) {
+                struct ggml_cuda_device_properties props;
+                ggml_backend_cuda_get_device_properties(i, &props);
+                fprintf(stderr, "%d: %s - %.2f GiB\n", i, props.name, props.totalGlobalMem / 1073741824.0);
+            }
+        } else {
+            fprintf(stderr, "No Accelerator support available\n");
+        }
+    } else {
+        fprintf(stderr, "No Accelerator support available\n");
+    }
+    fprintf(stderr, "\n========================================================\n\033[0m");
+}
+
+void get_model_info(ModelInfo *info, llama_model *model) {
+    char buf[MAX_STRING_LENGTH];
+    llama_model_desc(model, buf, sizeof(buf));
+    strncpy(info->type, buf, sizeof(buf));
+    llama_model_meta_val_str(model, "general.name", buf, sizeof(buf));
+    strncpy(info->name, buf, sizeof(buf));
+
+    // check if the model name is empty, if it is then exit the program
+    if (strcmp(info->name, "") == 0) {
+        fprintf(stderr, "Error: Model name is empty. Please use a valid .gguf.\n");
+        exit(1);
+    }
+
+    llama_model_quant_str(model, buf, sizeof(buf));
+    strncpy(info->quant, buf, sizeof(buf));
+    llama_model_meta_val_str(model, "general.size_label", buf, sizeof(buf));
+    strncpy(info->size_label, buf, sizeof(buf));
+    info->size = llama_model_size(model);
+    info->params = llama_model_n_params(model);
 }

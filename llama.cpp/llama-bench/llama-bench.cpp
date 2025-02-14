@@ -122,7 +122,7 @@ struct printer {
         writer = std::make_unique<StringWriter>(output);
     }
 
-    virtual void print_header(const cmd_params & params, AcceleratorInfo accelerator_info, RuntimeInfo runtime_info, SystemInfo sys_info) { (void) params; }
+    virtual void print_header(const cmd_params & params, AcceleratorInfo accelerator_info, RuntimeInfo runtime_info, SystemInfo sys_info, ModelInfo model_info) { (void) params; }
     virtual void print_test(const test & t) = 0;
     virtual void print_footer() { }
 };
@@ -140,7 +140,7 @@ struct csv_printer : public printer {
         return escaped;
     }
 
-    void print_header(const cmd_params & params, AcceleratorInfo accelerator_info, RuntimeInfo runtime_info, SystemInfo sys_info) override  {
+    void print_header(const cmd_params & params, AcceleratorInfo accelerator_info, RuntimeInfo runtime_info, SystemInfo sys_info, ModelInfo model_info) override  {
         std::vector<std::string> fields = test::get_fields();
         writer->write("%s\n", utils::join(fields, ",").c_str());
         (void) params;
@@ -185,40 +185,40 @@ struct json_printer : public printer {
         }
     }
 
-void print_header(const cmd_params & params, AcceleratorInfo gpu_info, RuntimeInfo runtime_info, SystemInfo sys_info) override {
-    writer->write("{\n");
-    
-    // Print RuntimeInfo object
-    writer->write("  \"runtime_info\": {\n");
-    writer->write("    \"name\": \"%s\",\n", "llamafile");
-    writer->write("    \"version\": \"%s\",\n", runtime_info.llamafile_version);
-    writer->write("    \"commit\": \"%s\"\n", runtime_info.llama_commit);
-    writer->write("  },\n");
+    void print_header(const cmd_params & params, AcceleratorInfo accelerator_info, RuntimeInfo runtime_info, SystemInfo sys_info, ModelInfo model_info) override {
+        writer->write("{\n");
+        
+        // Print RuntimeInfo object
+        writer->write("  \"runtime_info\": {\n");
+        writer->write("    \"name\": \"%s\",\n", "llamafile");
+        writer->write("    \"version\": \"%s\",\n", runtime_info.llamafile_version);
+        writer->write("    \"commit\": \"%s\"\n", runtime_info.llama_commit);
+        writer->write("  },\n");
 
-    // Print SystemInfo object
-    writer->write("  \"system_info\": {\n");
-    writer->write("    \"cpu_name\": \"%s\",\n", sys_info.cpu);
-    writer->write("    \"cpu_arch\": \"%s\",\n", sys_info.system_architecture);
-    writer->write("    \"ram_gb\": %.2f,\n", sys_info.ram_gb);
-    writer->write("    \"kernel_type\": \"%s\",\n", sys_info.kernel_type);
-    writer->write("    \"kernel_release\": \"%s\",\n", sys_info.kernel_release);
-    writer->write("    \"version\": \"%s\"\n", sys_info.version);
-    writer->write("  },\n");
+        // Print SystemInfo object
+        writer->write("  \"system_info\": {\n");
+        writer->write("    \"cpu_name\": \"%s\",\n", sys_info.cpu);
+        writer->write("    \"cpu_arch\": \"%s\",\n", sys_info.system_architecture);
+        writer->write("    \"ram_gb\": %.2f,\n", sys_info.ram_gb);
+        writer->write("    \"kernel_type\": \"%s\",\n", sys_info.kernel_type);
+        writer->write("    \"kernel_release\": \"%s\",\n", sys_info.kernel_release);
+        writer->write("    \"version\": \"%s\"\n", sys_info.version);
+        writer->write("  },\n");
 
-    // Print GPUInfo object
-    writer->write("  \"accelerator_info\": {\n");
-    writer->write("    \"name\": \"%s\",\n", gpu_info.name);
-    writer->write("    \"manufacturer\": \"%s\",\n", gpu_info.manufacturer);
-    writer->write("    \"memory_gb\": %.2f,\n", gpu_info.total_memory_gb);
-    // TODO
-    writer->write("    \"type\": \"%s\"\n", (FLAG_gpu >= 0 && llamafile_has_gpu()) ? "GPU" : "CPU");
-    writer->write("  },\n");
+        // Print GPUInfo object
+        writer->write("  \"accelerator_info\": {\n");
+        writer->write("    \"name\": \"%s\",\n", accelerator_info.name);
+        writer->write("    \"manufacturer\": \"%s\",\n", accelerator_info.manufacturer);
+        writer->write("    \"memory_gb\": %.2f,\n", accelerator_info.total_memory_gb);
+        // TODO
+        writer->write("    \"type\": \"%s\"\n", (FLAG_gpu >= 0 && llamafile_has_gpu()) ? "GPU" : "CPU");
+        writer->write("  },\n");
 
-    // Start the results array
-    writer->write("  \"results\": [\n");
-    
-    (void) params;
-}
+        // Start the results array
+        writer->write("  \"results\": [\n");
+        
+        (void) params;
+    }
 
     void print_fields(const std::vector<std::string> & fields, const std::vector<std::string> & values) {
         assert(fields.size() == values.size());
@@ -329,7 +329,7 @@ struct markdown_printer : public printer {
         return total_width;
     }    
 
-    void print_header(const cmd_params & params, AcceleratorInfo gpu_info, RuntimeInfo runtime_info, SystemInfo sys_info) override {
+    void print_header(const cmd_params & params, AcceleratorInfo accelerator_info, RuntimeInfo runtime_info, SystemInfo sys_info, ModelInfo model_info) override {
         fields.emplace_back("test");
         fields.emplace_back("run number");
         fields.emplace_back("avg time"); // [jart]
@@ -346,25 +346,39 @@ struct markdown_printer : public printer {
         std::string border(total_width, '-');
         border[0] = '+';
         border[total_width-1] = '+';
+        writer->write("%s\n", border.c_str());
 
         // Create the GPU info string and calculate padding
         char gpu_info_str[256];
+        
+        
         int content_length = snprintf(gpu_info_str, sizeof(gpu_info_str), 
                                     "%s - %.2f GiB", 
-                                    gpu_info.name, 
-                                    gpu_info.total_memory_gb);
-
-        if (content_length < 0 || static_cast<size_t>(content_length + 2) > total_width) {
-            throw std::runtime_error("GPU info string too long for display width");
-        }
+                                    accelerator_info.name, 
+                                    accelerator_info.total_memory_gb);
         int padding = (total_width - 2 - content_length) / 2;
-
-
-        writer->write("%s\n", border.c_str());
+        
+        // Print the GPU info
         writer->write("|%*s%s%*s|\n",
             padding, "", 
             gpu_info_str,
             padding + (content_length % 2 == 0 ? 0 : 1), "");
+
+        // Create the model info string and calculate padding
+        char model_info_str[256];
+        content_length = snprintf(model_info_str, sizeof(model_info_str), 
+                                    "%s - %s", 
+                                    model_info.name, 
+                                    model_info.quant);
+        padding = (total_width - 2 - content_length) / 2;
+        
+        // Print the model info
+        writer->write("|%*s%s%*s|\n",
+            padding, "", 
+            model_info_str,
+            padding + (content_length % 2 == 0 ? 0 : 1), "");
+
+
         writer->write("%s\n", border.c_str());
 
         writer->write("|");
@@ -530,7 +544,7 @@ struct sql_printer : public printer {
         }
     }
 
-    void print_header(const cmd_params & params, AcceleratorInfo gpu_info, RuntimeInfo runtime_info, SystemInfo sys_info) override {
+    void print_header(const cmd_params & params, AcceleratorInfo accelerator_info, RuntimeInfo runtime_info, SystemInfo sys_info, ModelInfo model_info) override {
         std::vector<std::string> fields = test::get_fields();
         writer->write("CREATE TABLE IF NOT EXISTS test (\n");
         for (size_t i = 0; i < fields.size(); i++) {
@@ -556,16 +570,6 @@ static void llama_null_log_callback(enum ggml_log_level level, const char * text
     (void) level;
     (void) text;
     (void) user_data;
-}
-
-void* print_num_generated_periodically(void* args) {
-    test * t = (test *) args;
-    while (1) { // Loop indefinitely until the thread is cancelled from outside
-        printf("num generated: %d\n", t->t_gen);
-        fflush(stdout); // Ensure the output is printed immediately
-        usleep(100 * 1000); // Sleep for 100 milliseconds
-    }
-    return NULL; // This line is technically unreachable in this example
 }
 
 void* update_t_gen_column(void* args) {
@@ -622,7 +626,6 @@ __attribute__((__constructor__(101))) static void init(void) {
 }
 
 static void warmup_run(llama_model *model, llama_context *ctx, cmd_params inst) {
-    printf("Warming up... ");
     int n_batch = inst.n_batch;
     int n_processed = 0;
     int n_prompt = inst.n_prompt;
@@ -685,6 +688,34 @@ int main(int argc, char ** argv) {
     cmd_params params = parse_cmd_params(argc, argv);
     FLAGS_READY = true;
 
+    // select GPU if multiple GPUs are available and none is specified
+    if (FLAG_gpu >= 0 && llamafile_has_gpu()) {
+        if (llamafile_has_cuda()) {
+            int count = ggml_backend_cuda_get_device_count();
+            if (params.main_gpu == UINT_MAX) {
+                if (count == 1) {
+                    params.main_gpu = 0;
+                } else {
+                    fprintf(stderr, "\n\033[0;33mMultiple GPUs detected. Please select the main GPU to use:\n");
+                    list_available_accelerators();
+                    fprintf(stderr, "\n\033[0m");
+                    unsigned int main_gpu;
+                    while (true) {
+                        fprintf(stderr, "Enter the number of the main GPU: ");
+                        std::string input;
+                        std::getline(std::cin, input);
+                        std::istringstream iss(input);
+                        if (iss >> main_gpu && main_gpu >= 0 && main_gpu < count) {
+                            break;
+                        }
+                        fprintf(stderr, "Invalid GPU number. Please try again.\n");
+                    }
+                    params.main_gpu = main_gpu;
+                }
+            }
+        }
+    }
+
     RuntimeInfo runtime_info;
     get_runtime_info(&runtime_info);
 
@@ -694,8 +725,6 @@ int main(int argc, char ** argv) {
     AcceleratorInfo accelerator_info;
     get_accelerator_info(&accelerator_info, &params);
 
-    unsigned int main_gpu = params.main_gpu;
-
     // initialize llama.cpp
     if (!params.verbose) {
         llama_log_set(llama_null_log_callback, NULL);
@@ -704,10 +733,26 @@ int main(int argc, char ** argv) {
     llama_backend_init();
     llama_numa_init(params.numa);
 
+    printf("Loading model...\n");
+    cmd_params inst = params;
+    inst.n_prompt = 1024;
+    inst.n_gen = 16;
+    llama_model * lmodel = llama_load_model_from_file(inst.model.c_str(), inst.to_llama_mparams());
+    if (lmodel == NULL) {
+        fprintf(stderr, "%s: error: failed to load model '%s'\n", __func__, inst.model.c_str());
+        return 1;
+    }
+    printf("Model loaded.\n");
+
+    ModelInfo model_info;
+    get_model_info(&model_info, lmodel);
+
     std::string req_payload;
     json_printer* req_printer = new json_printer();
     req_printer->set_string_output(req_payload);
-    req_printer->print_header(params, accelerator_info, runtime_info, sys_info);
+    req_printer->print_header(params, accelerator_info, runtime_info, sys_info, model_info);
+
+    printf("Warming up...\n");
 
     // initialize printer
     std::unique_ptr<printer> p;
@@ -730,19 +775,9 @@ int main(int argc, char ** argv) {
     }
     p->set_file_output(stdout);
 
-
-    PowerSampler * sampler = getPowerSampler(100, main_gpu);
+    PowerSampler * sampler = getPowerSampler(100, params.main_gpu);
     pthread_t print_thread;
 
-    cmd_params inst = params;
-    inst.n_prompt = 1024;
-    inst.n_gen = 16;
-
-    llama_model * lmodel = llama_load_model_from_file(inst.model.c_str(), inst.to_llama_mparams());
-    if (lmodel == NULL) {
-        fprintf(stderr, "%s: error: failed to load model '%s'\n", __func__, inst.model.c_str());
-        return 1;
-    }
     llama_context_params cparams = inst.to_llama_cparams();
     cparams.n_ctx = inst.n_prompt + inst.n_gen;
     llama_context * ctx = llama_new_context_with_model(lmodel, cparams);
@@ -753,7 +788,7 @@ int main(int argc, char ** argv) {
     }
     warmup_run(lmodel, ctx, inst);
 
-    p->print_header(params, accelerator_info, runtime_info, sys_info);
+    p->print_header(params, accelerator_info, runtime_info, sys_info, model_info);
     for (const auto & test_cfg : baseline_tests) {
         inst.n_prompt = test_cfg.n_prompt;
         inst.n_gen = test_cfg.n_gen;

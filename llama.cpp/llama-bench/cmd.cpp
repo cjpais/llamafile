@@ -2,6 +2,7 @@
 
 #include "cmd.h"
 #include "llama.cpp/cores.h"
+#include "system.h"
 #include <cosmo.h>
 
 static const cmd_params cmd_params_defaults = {
@@ -70,7 +71,6 @@ cmd_params parse_cmd_params(int argc, char ** argv) {
     std::string arg;
     bool invalid_param = false;
     const std::string arg_prefix = "--";
-    const char split_delim = ',';
 
     for (int i = 1; i < argc; i++) {
         arg = argv[i];
@@ -82,56 +82,38 @@ cmd_params parse_cmd_params(int argc, char ** argv) {
             print_usage(argc, argv);
             exit(0);
         } else if (arg == "-m" || arg == "--model") {
-            if (++i >= argc) {
-                invalid_param = true;
-                break;
-            }
-            params.model = argv[i];
-        } else if (arg == "-mg" || arg == "--main-gpu") {
-            if (++i >= argc) {
-                invalid_param = true;
-                break;
-            }
-            params.main_gpu = std::stoi(argv[i]);
-        } else if (arg == "-fa" || arg == "--flash-attn") {
-            if (++i >= argc) {
-                invalid_param = true;
-                break;
-            }
-            params.flash_attn = std::stoi(argv[i]);
-        } else if (arg == "--recompile") {
-            FLAG_recompile = true;            
-        } else if (arg == "--gpu" || arg == "-g") {
-            if (++i >= argc) {
-                invalid_param = true;
-                break;
-            }
-            FLAG_gpu = llamafile_gpu_parse(argv[i]);
-            if (FLAG_gpu == LLAMAFILE_GPU_ERROR) {
-                fprintf(stderr, "error: invalid --gpu flag value: %s\n", argv[i]);
-                exit(1);
-            }
-            if (FLAG_gpu >= 0) {
-                params.n_gpu_layers = 9999;
-            } else if (FLAG_gpu == LLAMAFILE_GPU_DISABLE) {
-                params.n_gpu_layers = 0;
+            if (++i >= argc) invalid_param = true;
+            else params.model = argv[i];
+        } else if (arg == "-i" || arg == "--gpu-index") {
+            if (++i >= argc) invalid_param = true;
+            else params.main_gpu = std::stoi(argv[i]);
+        } else if (arg == "--list-gpus") {
+            FLAG_gpu = LLAMAFILE_GPU_AUTO;
+            FLAGS_READY = true;
+            list_available_accelerators();  // You'll need to implement this
+            exit(0);
+        } else if (arg == "-c" || arg == "--cpu") {
+            FLAG_gpu = LLAMAFILE_GPU_DISABLE;
+            params.n_gpu_layers = 0;
+        } else if (arg == "-g" || arg == "--gpu") {
+            if (++i >= argc) invalid_param = true;
+            else {
+                FLAG_gpu = llamafile_gpu_parse(argv[i]);
+                if (FLAG_gpu == LLAMAFILE_GPU_ERROR) {
+                    fprintf(stderr, "error: invalid --gpu value: %s\n", argv[i]);
+                    exit(1);
+                }
+                params.n_gpu_layers = (FLAG_gpu >= 0) ? 9999 : 0;
             }
         } else if (arg == "-o" || arg == "--output") {
-            if (++i >= argc) {
-                invalid_param = true;
-                break;
-            }
-            if (argv[i] == std::string("csv")) {
-                params.output_format = CSV;
-            } else if (argv[i] == std::string("json")) {
-                params.output_format = JSON;
-            } else if (argv[i] == std::string("md")) {
-                params.output_format = MARKDOWN;
-            } else if (argv[i] == std::string("sql")) {
-                params.output_format = SQL;
-            } else {
-                invalid_param = true;
-                break;
+            if (++i >= argc) invalid_param = true;
+            else {
+                std::string fmt = argv[i];
+                if (fmt == "csv") params.output_format = CSV;
+                else if (fmt == "json") params.output_format = JSON;
+                else if (fmt == "md") params.output_format = MARKDOWN;
+                else if (fmt == "sql") params.output_format = SQL;
+                else invalid_param = true;
             }
         } else if (arg == "-v" || arg == "--verbose") {
             params.verbose = true;
@@ -139,21 +121,39 @@ cmd_params parse_cmd_params(int argc, char ** argv) {
             params.send_results = SEND_YES;
         } else if (arg == "-n" || arg == "--no-send-results") {
             params.send_results = SEND_NO;
-        } else if (arg == "-e" || arg == "--extended") {
+        } else if (arg == "--extended") {
             params.reps = 4;
+        } else if (arg == "--long") {
+            params.reps = 16;
+        } else if (arg == "--reps") {
+            if (++i >= argc) invalid_param = true;
+            else params.reps = std::max(1, std::stoi(argv[i]));
+        } else if (arg == "--recompile") {
+            FLAG_recompile = true;
         } else if (arg[0] == '-') {
             invalid_param = true;
-            break;
         } else {
             params.model = argv[i];
         }
+
+        if (invalid_param) break;
     }
+
     if (invalid_param) {
-        fprintf(stderr, "%s: invalid parameter for argument: %s\n", program_invocation_name, arg.c_str());
+        fprintf(stderr, "%s: invalid parameter for: %s\n", 
+                program_invocation_name, arg.c_str());
         exit(1);
     }
+
     if (params.model.empty()) {
-        fprintf(stderr, "%s: missing operand\n", program_invocation_name);
+        fprintf(stderr, "%s: missing model file\n", program_invocation_name);
+        exit(1);
+    }
+
+    // Validate mutually exclusive flags
+    if (params.send_results == SEND_YES && params.send_results == SEND_NO) {
+        fprintf(stderr, "%s: cannot use both --send-results and --no-send-results\n",
+                program_invocation_name);
         exit(1);
     }
 
@@ -176,11 +176,15 @@ void print_usage(int /* argc */, char ** argv) {
     printf("options:\n");
     printf("  -h, --help\n");
     printf("  -m, --model <filename>                     (default: %s)\n", cmd_params_defaults.model.c_str());
+    printf("  -c, --cpu                                  disable GPU acceleration (alias for --gpu=disabled)\n");
     printf("  -g, --gpu <auto|amd|apple|nvidia|disabled> (default: \"auto\")\n");
-    printf("  -mg, --main-gpu <i>                        (default: %d)\n", cmd_params_defaults.main_gpu);
+    printf("  -i, --gpu-index <i>                        select GPU by index (default: %d)\n", cmd_params_defaults.main_gpu);
+    printf("  --list-gpus                                list available GPUs and exit\n");
     printf("  -o, --output <csv|json|md|sql>             (default: %s)\n", output_format_str(cmd_params_defaults.output_format));
-    printf("  -v, --verbose                              (default: %s)\n", cmd_params_defaults.verbose ? "1" : "0");
-    printf("  -y, --send-results                         always send results to public database\n");
-    printf("  -n, --no-send-results                      never send results to public database\n");
-    printf("  -e, --extended                             run extended benchmark (4 reps) (default: %s)\n", cmd_params_defaults.reps == 4 ? "1" : "0");
+    printf("  -v, --verbose                              verbose output (default: %s)\n", cmd_params_defaults.verbose ? "yes" : "no");
+    printf("  -y, --send-results                         send results without confirmation\n");
+    printf("  -n, --no-send-results                      disable sending results\n");
+    printf("  -e, --extended                             run 4 reps (shortcut for --reps=4)\n");
+    printf("  --long                                     run 16 reps (shortcut for --reps=16)\n");
+    printf("  --reps <N>                                 set custom number of repetitions\n");
 }

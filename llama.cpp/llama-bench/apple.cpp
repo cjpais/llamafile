@@ -1,4 +1,3 @@
-
 #include <cosmo.h>
 #include <dlfcn.h>
 

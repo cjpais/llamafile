@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include "llama.cpp/llama.h"
 
 #define MAX_STRING_LENGTH 256
 
@@ -30,7 +31,18 @@ struct AcceleratorInfo {
     double capability;
 };
 
+struct ModelInfo {
+    char name[MAX_STRING_LENGTH];
+    char quant[MAX_STRING_LENGTH];
+    char size_label[MAX_STRING_LENGTH];
+    uint64_t size;
+    uint64_t params;
+    char type[MAX_STRING_LENGTH];
+};
+
 // Public interface
 void get_runtime_info(RuntimeInfo* info);
 void get_sys_info(SystemInfo* info);
 void get_accelerator_info(AcceleratorInfo* info, cmd_params* params);
+void list_available_accelerators();
+void get_model_info(ModelInfo* info, llama_model* model);
