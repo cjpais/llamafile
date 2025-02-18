@@ -6,15 +6,12 @@
 #include "nvml.h"
 #include "rsmi.h"
 #include "apple.h"
-// #include "amdgpu.h"
 #include "llama.cpp/ggml-backend-impl.h"
 
 typedef struct {
-    double  power; // TODO float.
-    float   vram;
+    double  power;
 } power_sample_t;
 
-// TODO rename.. accelerator monitor or something?
 struct PowerSampler {
     // vars
     long sample_length_ms_;
@@ -38,7 +35,6 @@ struct PowerSampler {
 
     power_sample_t getLatestSample();
 
-    // TODO protect this as its called from the sampling thread
     // this returns the instantaneous power in microwatts
     virtual power_sample_t sample() = 0;
     
@@ -58,9 +54,6 @@ struct NvidiaPowerSampler : public PowerSampler {
     ~NvidiaPowerSampler() override;
 
 protected:
-    // void startSampling() override;
-    // void stopSampling() override;
-    // PowerSample computeSample() override;
     power_sample_t sample() override;
     double getEnergyConsumed() override;
 };
@@ -70,9 +63,6 @@ struct AMDPowerSampler : public PowerSampler {
     ~AMDPowerSampler() override;
 
 protected:
-    // void startSampling() override;
-    // void stopSampling() override;
-    // PowerSample computeSample() override;
     power_sample_t sample() override;
     double getEnergyConsumed() override;
 };
@@ -88,21 +78,9 @@ struct ApplePowerSampler : public PowerSampler {
     ~ApplePowerSampler() override;
 
 protected:
-    // void startSampling() override;
-    // void stopSampling() override;
-    // PowerSample computeSample() override;
     power_sample_t sample() override;
     double getEnergyConsumed() override;
 };
-
-// struct AMDPowerSampler2 : public PowerSampler {
-//     AMDPowerSampler2(long sample_length_ms);
-//     ~AMDPowerSampler2() override {}
-
-// protected:
-//     power_sample_t sample() override;
-//     double getEnergyConsumed() override;
-// };
 
 struct DummyPowerSampler : public PowerSampler {
     DummyPowerSampler(long sample_length_ms);

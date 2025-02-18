@@ -283,7 +283,6 @@ static std::unique_ptr<SSLContext> SetupSSL(int& sock, const std::string& hostna
     // Perform handshake
     int ret = mbedtls_ssl_handshake(&ctx->ssl);
     if (ret != 0) {
-        // TODO just exit?
         throw std::runtime_error("SSL handshake failed: " + 
                                std::string(DescribeSslClientHandshakeError(&ctx->ssl, ret)));
     }

@@ -31,9 +31,8 @@ void PowerSampler::start() {
     }
 }
 
-// TODO return a sample, with max vram and avg power
 power_sample_t PowerSampler::stop() {
-    power_sample_t result = {0.0, 0.0f};
+    power_sample_t result = {0.0};
     if (is_sampling_) {
         is_sampling_ = false;
         sampling_end_time_ = timespec_real();
@@ -45,16 +44,10 @@ power_sample_t PowerSampler::stop() {
 
         // average the samples
         double total_milliwatts = 0;
-        // TODO max vram could be wrong. we really need an initial sample before 
-        // anything starts to get an accurate reading
-        float max_vram = 0;
 
         if (samples_.size() > 1) {
             for (int i = 0; i < samples_.size(); i++) {
                 total_milliwatts += samples_[i].power;
-                if (samples_[i].vram > max_vram) {
-                    max_vram = samples_[i].vram;
-                }
             }
         }
 
@@ -68,10 +61,8 @@ power_sample_t PowerSampler::stop() {
             printf("Average power from energy consumed: %.2f W \n", energy_consumed / sampling_time);
         }
 
-        // TODO decide on default..?
         // pick the higher reading of the two
         result.power = (avg_watts > avg_watts_energy) ? avg_watts : avg_watts_energy;
-        result.vram = max_vram;
     }
 
     return result;
@@ -83,7 +74,7 @@ power_sample_t PowerSampler::getLatestSample() {
 
     if (samples_.empty()) {
         pthread_mutex_unlock(&samples_mutex_);
-        return {0.0, 0.0f};
+        return {0.0};
     }
 
     power_sample_t sample = samples_.back();
@@ -108,8 +99,6 @@ void* PowerSampler::sampling_thread_func(void* arg) {
     return nullptr;
 }
 
-// NvidiaPowerSampler implementation
-
 NvidiaPowerSampler::NvidiaPowerSampler(long sample_length_ms, unsigned int main_gpu)
     : PowerSampler(sample_length_ms) {
         bool ok = nvml_init();
@@ -131,7 +120,6 @@ power_sample_t NvidiaPowerSampler::sample() {
     power_sample_t sample;
     unsigned int mw;
 
-    // if (nvml_get_memory_usage(device_, &sample.vram)) { }
     if (!nvml_get_power_usage(device_, &mw)) {
         // TODO return a bool instead? error?
     }
@@ -149,8 +137,6 @@ double NvidiaPowerSampler::getEnergyConsumed() {
     return (double)mj;
 }
 
-// AMDPowerSampler implementation
-
 AMDPowerSampler::AMDPowerSampler(long sample_length_ms)
     : PowerSampler(sample_length_ms) {
         rsmi_init();
@@ -167,27 +153,26 @@ power_sample_t AMDPowerSampler::sample() {
     float vram;
 
     if (!rsmi_get_power(&power)) { }
-    if (!rsmi_get_memory_usage(&vram)) { }
 
     sample.power = power;
-    sample.vram = vram;
 
     return sample;
 }
 
 double AMDPowerSampler::getEnergyConsumed() {
     double uj;
-    // if (!rsmi_get_energy_count(&uj)) {
-    //     return 0.0;
-    // }
+    if (!rsmi_get_energy_count(&uj)) {
+        return 0.0;
+    }
     return uj;
 }
 
-// ApplePowerSampler implementation
-
 ApplePowerSampler::ApplePowerSampler(long sample_length_ms)
     : PowerSampler(sample_length_ms) {
-        init_apple_mon();
+        bool ok = init_apple_mon();
+        if (!ok) {
+            throw std::runtime_error("Failed to initialize Apple Power Monitoring");
+        }
         power_channel_ = am_get_power_channels();
         sub_ = am_get_subscription(power_channel_);
         last_sample_time_ = timespec_tomillis(timespec_real());
@@ -201,75 +186,50 @@ ApplePowerSampler::~ApplePowerSampler() {
 }
 
 power_sample_t ApplePowerSampler::sample() {
-    float used;
-    float total;
-    ggml_backend_metal_get_device_memory_usage(metal_backend_, &used, &total);
-
     long long time = timespec_tomillis(timespec_real());
     double mj = getEnergyConsumed();
 
     double power = (mj - last_sample_mj_) / (time - last_sample_time_);
-    // TODO we have to be careful with this as it is not protected by a mutex
+    // TODO this probably should be protected by a mutex
     last_sample_time_ = time;
     last_sample_mj_ = mj;
 
     // convert to power in milliwatts
-    power_sample_t sample = {power * 1e3, used};
+    power_sample_t sample = {power * 1e3};
 
     return sample;
 }
 
-// TODO this needs to be a void*?
 double ApplePowerSampler::getEnergyConsumed() {
     double mj = am_sample_to_millijoules(am_sample_power(sub_, power_channel_));
     return mj;
 }
 
-// DummyPowerSampler implementation
-
-// AMDPowerSampler2::AMDPowerSampler2(long sample_length_ms)
-//     : PowerSampler(sample_length_ms) {
-//         amdgpu_init();
-//     }
-
-// power_sample_t AMDPowerSampler2::sample() {
-//     return {0.0, 0.0f};
-// }
-
-// double AMDPowerSampler2::getEnergyConsumed() {
-//     return 0.0;
-// }
-
-// DummyPowerSampler implementation
-
 DummyPowerSampler::DummyPowerSampler(long sample_length_ms)
     : PowerSampler(sample_length_ms) {}
 
 power_sample_t DummyPowerSampler::sample() {
-    return {0.0, 0.0f};
+    return {0.0};
 }
 
 double DummyPowerSampler::getEnergyConsumed() {
     return 0.0;
 }
 
-// Update getPowerSampler function to return DummyPowerSampler if no other sampler is found
-// TODO handle which GPU to use (for NVIDIA)
 PowerSampler* getPowerSampler(long sample_length_ms, unsigned int main_gpu) {
     if (IsXnu()) {
         return new ApplePowerSampler(sample_length_ms);
     } else if (llamafile_has_gpu() && FLAG_gpu != LLAMAFILE_GPU_DISABLE) {
         if (llamafile_has_amd_gpu()) {
             // TODO change this to AMD power sampler when it works.
-            // return new AMDPowerSampler(sample_length_ms);
-            // return new AMDPowerSampler2(sample_length_ms);
             return new DummyPowerSampler(sample_length_ms);
         } else if (llamafile_has_cuda()) {
             try {
+                // TODO this will blow up on heterogeneous systems (AMD + NVIDIA hybrids probably)
                 return new NvidiaPowerSampler(sample_length_ms, main_gpu);
             } catch (const std::exception& e) {
                 // Log the error if needed
-                printf("NVIDIA initialization failed: %s\n", e.what());
+                printf("NVIDIA Power Monitoring Failed failed: %s\n", e.what());
                 return new DummyPowerSampler(sample_length_ms);
             }
         }

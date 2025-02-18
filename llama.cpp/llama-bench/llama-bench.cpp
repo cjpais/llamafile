@@ -2,20 +2,15 @@
 // vi: set et ft=cpp ts=4 sts=4 sw=4 fenc=utf-8 :vi
 
 #include <algorithm>
-#include <array>
 #include <cassert>
 // #include <chrono> [jart]
-#include <cinttypes>
 #include <clocale>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <ctime>
 #include <cstdlib>
-#include <iterator>
 #include <map>
-#include <numeric>
-#include <regex>
 #include <sstream>
 #include <iostream>
 #include <string>
@@ -24,8 +19,6 @@
 #include <dlfcn.h>
 #include <libgen.h>
 #include <pthread.h>
-#include <mutex> // TODO replace with pthreads
-#include <atomic> // TODO similar
 #include <sys/stat.h>
 #include <libc/intrin/x86.h>
 #include <libc/sysv/consts/hwcap.h>
@@ -210,7 +203,6 @@ struct json_printer : public printer {
         writer->write("    \"name\": \"%s\",\n", accelerator_info.name);
         writer->write("    \"manufacturer\": \"%s\",\n", accelerator_info.manufacturer);
         writer->write("    \"memory_gb\": %.2f,\n", accelerator_info.total_memory_gb);
-        // TODO
         writer->write("    \"type\": \"%s\"\n", (FLAG_gpu >= 0 && llamafile_has_gpu()) ? "GPU" : "CPU");
         writer->write("  },\n");
 
@@ -276,9 +268,6 @@ struct markdown_printer : public printer {
         if (field == "test") {
             return 13;
         }
-        // if (field == "vram") {
-        //     return 15;
-        // }
 
         int width = std::max((int)field.length(), 10);
 
@@ -413,7 +402,7 @@ struct markdown_printer : public printer {
                 }
                 value = buf;
             } else if (field == "params") {
-                snprintf(buf, sizeof(buf), "%d", t.model_n_params);
+                snprintf(buf, sizeof(buf), "%ld", t.model_n_params);
                 // if (t.model_n_params < 1000*1000*1000) {
                 //     snprintf(buf, sizeof(buf), "%.2f M", t.model_n_params / 1e6);
                 // } else {
@@ -482,16 +471,6 @@ struct markdown_printer : public printer {
                 }
 
                 value = buf;
-            } else if (field == "vram") {
-                if (t.monitor_result.vram > 0) {
-                    snprintf(buf, sizeof(buf), "%.2f MiB", t.monitor_result.vram);
-                    value = buf;
-                } else {
-                    // read instant vram
-                    power_sample_t sample = t.pwr_sampler->getLatestSample();
-                    snprintf(buf, sizeof(buf), "%.2f MiB", sample.vram);
-                    value = buf;
-                }
             } else if (field == "avg time") {
                 float avg_ms = t.avg_ns() / 1e6;
 
@@ -604,7 +583,7 @@ void* update_t_gen_column(void* args) {
 
         usleep(100000); // sleep for 100ms (100,000 microseconds)
     }
-    // TODO this last print is probably uncessary.
+    
     printf("\033[A"); // Move up
     printf("\033[2K"); // Clear the entire line
     p->print_test(t);
@@ -915,15 +894,12 @@ int main(int argc, char ** argv) {
 
     // TODO make this a func or something, also retry if it fails to send. 3 times. backoff
     if (user_cnf == "yes" || user_cnf == "y" || params.send_results == SEND_YES) {
-        printf("\nSending results...\n");
+        printf("\nSubmitting results...\n");
         Response response = POST("https://mbp.tail73f30.ts.net/api/results", req_payload, {
             {"Content-Type", "application/json"}
         });
 
         if (response.status == 200) {
-            // printf("Results sent!\n");
-            // printf("Results body: %s\n", response.body.c_str());
-
             // parse the response json
             std::pair<Json::Status, Json> json =
               Json::parse(response.body);
@@ -941,7 +917,7 @@ int main(int argc, char ** argv) {
                 printf("Result Link: https://llamascore.vercel.app/result/%d\n", (int)json.second["id"].getNumber());
             }
         } else {
-            printf("Error sending data to the public database. Status: %d\n", response.status);
+            printf("Error submitting results to the public database. Status: %d\n", response.status);
         }
     } else {
         printf("\nResults Not Submitted.\n");

@@ -7,7 +7,7 @@ typedef void* IOReportSubscriptionRef;
 typedef void* CVoidRef;
 typedef int CFIndex;
 
-void init_apple_mon();
+bool init_apple_mon();
 
 void am_release(void* obj);
 

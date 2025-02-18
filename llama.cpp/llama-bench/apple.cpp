@@ -34,12 +34,11 @@ static struct CoreFoundation {
     bool (*CFStringGetCString)(CFStringRef, char *, int, int);
 } core_foundation;
 
-// TODO error handling.
-void init_apple_mon() {
+bool init_apple_mon() {
     void *lib = cosmo_dlopen("/usr/lib/libIOReport.dylib", RTLD_LAZY);
     if (!lib) {
         tinylog(__func__, ": error: failed to open IOKit framework\n", NULL);
-        return;
+        return false;
     }
 
     bool ok = true;
@@ -55,7 +54,7 @@ void init_apple_mon() {
     if (!ok) {
         tinylog(__func__, ": error: not all IOReport symbols could be imported\n", NULL);
         cosmo_dlclose(lib);
-        return;
+        return false;
     }
 
     ok &= !!(core_foundation.CFDictionaryCreateMutableCopy = (CFMutableDictionaryRef (*)(void*, long, CFDictionaryRef))imp(lib, "CFDictionaryCreateMutableCopy"));
@@ -72,9 +71,10 @@ void init_apple_mon() {
     if (!ok) {
         tinylog(__func__, ": error: not all CoreFoundation symbols could be imported\n", NULL);
         cosmo_dlclose(lib);
-        return;
+        return false;
     }
 
+    return true;
 }
 
 static bool get_cstring_from_cfstring(CFStringRef cfString, char* buffer, size_t bufferSize) {
@@ -142,7 +142,7 @@ IOReportSubscriptionRef am_get_subscription(CFMutableDictionaryRef channels_mut)
     return s;
 }
 
-// TODO need some way of freeing the CFDictionaryRef
+// TODO need some way of freeing the CFDictionaryRef?
 CFDictionaryRef am_sample_power(IOReportSubscriptionRef sub, CFMutableDictionaryRef channels) {
     return io_report.IOReportCreateSamples(sub, channels, NULL);
 }

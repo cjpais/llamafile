@@ -103,7 +103,6 @@ std::string get_cpu_info() { // [jart]
             id = cpu_name;
         }
 
-        // TODO IF ARCH IS ARM
         // Get number of performance cores on macos
         int num_perf0_cpu;
         size = sizeof(num_perf0_cpu);
@@ -206,7 +205,6 @@ void get_sys_info(SystemInfo* info) {
 void get_accelerator_info(AcceleratorInfo* info, cmd_params * params) {
     if (info == NULL) return;
 
-    // TODO should pick the gpu based on mg flag???
     if (FLAG_gpu >= 0 && llamafile_has_gpu()) {
         if (llamafile_has_cuda()) {
             int count = ggml_backend_cuda_get_device_count();
@@ -273,20 +271,17 @@ void get_accelerator_info(AcceleratorInfo* info, cmd_params * params) {
         }
     } else {
         #ifdef __x86_64__
-            strncpy(info->manufacturer, get_cpu_manufacturer(), MAX_STRING_LENGTH - 1); // TODO hit registers
+            strncpy(info->manufacturer, get_cpu_manufacturer(), MAX_STRING_LENGTH - 1);
         #else
             if IsXnu() {
-                strncpy(info->manufacturer, "Apple", MAX_STRING_LENGTH - 1); // TODO hit registers
+                strncpy(info->manufacturer, "Apple", MAX_STRING_LENGTH - 1);
             } else {
-                strncpy(info->manufacturer, "Unknown", MAX_STRING_LENGTH - 1); // TODO hit registers
+                strncpy(info->manufacturer, "Unknown", MAX_STRING_LENGTH - 1);
             }
         #endif
         strncpy(info->name, get_cpu_info().c_str(), MAX_STRING_LENGTH - 1);
         info->total_memory_gb = get_mem_gb(); 
     }
-
-    // TODO: other backends (metal)
-    // macos: get gpu cores `system_profiler -detailLevel basic SPDisplaysDataType | grep 'Total Number of Cores'`
 }
 
 void list_available_accelerators() {
