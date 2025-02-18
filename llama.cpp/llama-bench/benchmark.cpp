@@ -41,7 +41,7 @@ test::test(const cmd_params &inst, const llama_model *lmodel,
     curr_run = 0;
     t_gen = 0;
     t_processed = 0;
-    monitor_result = {0.0, 0.0f};
+    monitor_result = {0.0};
     pwr_sampler = sampler;
 
     if (n_prompt > 0 && n_gen == 0) {
