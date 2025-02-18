@@ -114,7 +114,7 @@ void* update_t_gen_column(void* args) {
 
 std::string getUserConfirmation() {
     std::string user_input;
-    printf("\nDo you want to your results to the public database? (yes/no): ");
+    printf("\nDo you want to submit your results to the public database? (y/n): ");
     std::getline(std::cin, user_input);
     
     // Convert to lowercase for case-insensitive comparison
@@ -167,6 +167,159 @@ static void warmup_run(llama_model *model, llama_context *ctx, cmd_params inst) 
     printf("Warmup complete.\n\n");
 }
 
+static bool submitBenchmarkResults(const std::string& req_payload, const cmd_params& params, int max_retries = 3) {
+    // Ask user for confirmation before sending the data
+    std::string user_cnf;
+    if (params.send_results == SEND_ASK) {
+        user_cnf = getUserConfirmation();
+    }
+
+    if (!(user_cnf == "yes" || user_cnf == "y" || params.send_results == SEND_YES)) {
+        printf("\nResults Not Submitted.\n");
+        return false;
+    }
+
+    printf("\nSubmitting results...\n");
+    
+    // Implement retry with exponential backoff
+    for (int attempt = 0; attempt < max_retries; attempt++) {
+        if (attempt > 0) {
+            // Exponential backoff: wait 2^attempt seconds before retrying
+            int wait_time = (1 << attempt);
+            printf("Retry attempt %d of %d after %d seconds...\n", attempt + 1, max_retries, wait_time);
+            usleep(wait_time * 1000000);
+        }
+
+        Response response = POST("https://mbp.tail73f30.ts.net/api/results", req_payload, {
+            {"Content-Type", "application/json"}
+        });
+
+        if (response.status == 200) {
+            std::pair<Json::Status, Json> json = Json::parse(response.body);
+
+            if (json.first != Json::success) {
+                printf("Error parsing response json\n");
+                continue;
+            }
+            if (!json.second.isObject()) {
+                printf("Response json is not an object\n");
+                continue;
+            }
+
+            if (json.second["id"].isNumber()) {
+                printf("Result Link: https://llamascore.vercel.app/result/%d\n", 
+                       (int)json.second["id"].getNumber());
+                return true;
+            }
+        } else {
+            printf("Error submitting results to the public database. Status: %d\n", response.status);
+            if (attempt < max_retries - 1) {
+                continue;
+            }
+        }
+    }
+
+    printf("Failed to submit results after %d attempts\n", max_retries);
+    return false;
+}
+
+static void acceleratorSelector(cmd_params* params) {
+    if (FLAG_gpu >= 0 && llamafile_has_gpu()) {
+        if (llamafile_has_cuda()) {
+            int count = ggml_backend_cuda_get_device_count();
+            if (params->main_gpu == UINT_MAX) {
+                if (count == 1) {
+                    params->main_gpu = 0;
+                } else {
+                    fprintf(stderr, "\n\033[0;33mMultiple GPUs detected. Please select the main GPU to use:\n");
+                    list_available_accelerators();
+                    fprintf(stderr, "\n\033[0m");
+                    unsigned int main_gpu;
+                    while (true) {
+                        fprintf(stderr, "Enter the number of the main GPU: ");
+                        std::string input;
+                        std::getline(std::cin, input);
+                        std::istringstream iss(input);
+                        if (iss >> main_gpu && main_gpu >= 0 && main_gpu < count) {
+                            break;
+                        }
+                        fprintf(stderr, "Invalid GPU number. Please try again.\n");
+                    }
+                    params->main_gpu = main_gpu;
+                }
+            }
+        }
+    }
+}
+
+static void displayResults(Json data) {
+    if (data["results"].isArray()) {
+        std::vector<Json> results = data["results"].getArray();
+        
+        double total_prompt_tps = 0.0;
+        double total_gen_tps = 0.0;
+        double total_ttft_ms = 0.0;
+        double total_power_watts = 0.0;
+        int valid_count = 0;
+
+        for (const auto & result : results) {
+            if (result.isObject()) {
+                bool valid_entry = true;
+                
+                // Check if all required fields exist and are numbers
+                if (!result.contains("prompt_tps") || 
+                    !result.contains("gen_tps") || 
+                    !result.contains("ttft_ms") || 
+                    !result.contains("power_watts")) {
+                    valid_entry = false;
+                } else {
+                    // Get a non-const reference to access the values
+                    auto& obj = const_cast<Json&>(result);
+                    if (!obj["prompt_tps"].isNumber() ||
+                        !obj["gen_tps"].isNumber() ||
+                        !obj["ttft_ms"].isNumber() ||
+                        !obj["power_watts"].isNumber()) {
+                        valid_entry = false;
+                    }
+                }
+
+                if (valid_entry) {
+                    auto& obj = const_cast<Json&>(result);
+                    total_prompt_tps += obj["prompt_tps"].getNumber();
+                    total_gen_tps += obj["gen_tps"].getNumber();
+                    total_ttft_ms += obj["ttft_ms"].getNumber();
+                    total_power_watts += obj["power_watts"].getNumber();
+                    valid_count++;
+                }
+            }
+        }
+
+        if (valid_count > 0) {
+            double avg_prompt_tps = total_prompt_tps / valid_count;
+            double avg_gen_tps = total_gen_tps / valid_count;
+            double avg_ttft_ms = total_ttft_ms / valid_count;
+
+
+            // calculate the geometric mean of the performance values for a score
+            double score = pow(avg_prompt_tps * avg_gen_tps * (1000 / avg_ttft_ms), 1.0 / 3.0) * 10;
+            // printf("\n\033[1;35mYour LocalScore:\n\n", score);
+            printf("\n\033[1;35m");
+            ascii_display::print_logo();
+            printf("\n");
+            ascii_display::printLargeNumber((int)score);
+            printf("\033[0m\n");
+            printf("\033[32mToken Generation: \t \033[1;32m%.2f\033[0m \033[3;32mtok/s\033[0m\n", avg_gen_tps);
+            printf("\033[36mPrompt Processing: \t \033[1;36m%.2f\033[0m \033[3;36mtok/s\033[0m\n", avg_prompt_tps);
+            printf("\033[33mTime to First Token:\t \033[1;33m%.2f\033[0m \033[3;33mms\033[0m\n", avg_ttft_ms);
+            printf("\033[0m");
+        } else {
+            printf("No valid results found in the array\n");
+        }
+    } else {
+        printf("Results is not an array\n");
+    }
+}
+
 int main(int argc, char ** argv) {
     ShowCrashReports();
 
@@ -190,32 +343,7 @@ int main(int argc, char ** argv) {
     FLAGS_READY = true;
 
     // select GPU if multiple GPUs are available and none is specified
-    if (FLAG_gpu >= 0 && llamafile_has_gpu()) {
-        if (llamafile_has_cuda()) {
-            int count = ggml_backend_cuda_get_device_count();
-            if (params.main_gpu == UINT_MAX) {
-                if (count == 1) {
-                    params.main_gpu = 0;
-                } else {
-                    fprintf(stderr, "\n\033[0;33mMultiple GPUs detected. Please select the main GPU to use:\n");
-                    list_available_accelerators();
-                    fprintf(stderr, "\n\033[0m");
-                    unsigned int main_gpu;
-                    while (true) {
-                        fprintf(stderr, "Enter the number of the main GPU: ");
-                        std::string input;
-                        std::getline(std::cin, input);
-                        std::istringstream iss(input);
-                        if (iss >> main_gpu && main_gpu >= 0 && main_gpu < count) {
-                            break;
-                        }
-                        fprintf(stderr, "Invalid GPU number. Please try again.\n");
-                    }
-                    params.main_gpu = main_gpu;
-                }
-            }
-        }
-    }
+    acceleratorSelector(&params);
 
     RuntimeInfo runtime_info;
     get_runtime_info(&runtime_info);
@@ -339,108 +467,10 @@ int main(int argc, char ** argv) {
         printf("Json is not an object\n");
         return 1;
     }
-    if (data.second["results"].isArray()) {
-        std::vector<Json> results = data.second["results"].getArray();
-        
-        double total_prompt_tps = 0.0;
-        double total_gen_tps = 0.0;
-        double total_ttft_ms = 0.0;
-        double total_power_watts = 0.0;
-        int valid_count = 0;
+    
+    displayResults(data.second);
 
-        for (const auto & result : results) {
-            if (result.isObject()) {
-                bool valid_entry = true;
-                
-                // Check if all required fields exist and are numbers
-                if (!result.contains("prompt_tps") || 
-                    !result.contains("gen_tps") || 
-                    !result.contains("ttft_ms") || 
-                    !result.contains("power_watts")) {
-                    valid_entry = false;
-                } else {
-                    // Get a non-const reference to access the values
-                    auto& obj = const_cast<Json&>(result);
-                    if (!obj["prompt_tps"].isNumber() ||
-                        !obj["gen_tps"].isNumber() ||
-                        !obj["ttft_ms"].isNumber() ||
-                        !obj["power_watts"].isNumber()) {
-                        valid_entry = false;
-                    }
-                }
-
-                if (valid_entry) {
-                    auto& obj = const_cast<Json&>(result);
-                    total_prompt_tps += obj["prompt_tps"].getNumber();
-                    total_gen_tps += obj["gen_tps"].getNumber();
-                    total_ttft_ms += obj["ttft_ms"].getNumber();
-                    total_power_watts += obj["power_watts"].getNumber();
-                    valid_count++;
-                }
-            }
-        }
-
-        if (valid_count > 0) {
-            double avg_prompt_tps = total_prompt_tps / valid_count;
-            double avg_gen_tps = total_gen_tps / valid_count;
-            double avg_ttft_ms = total_ttft_ms / valid_count;
-
-
-            // calculate the geometric mean of the performance values for a score
-            double score = pow(avg_prompt_tps * avg_gen_tps * (1000 / avg_ttft_ms), 1.0 / 3.0) * 10;
-            // printf("\n\033[1;35mYour LocalScore:\n\n", score);
-            printf("\n\033[1;35m");
-            ascii_display::print_logo();
-            printf("\n");
-            ascii_display::printLargeNumber((int)score);
-            printf("\033[0m\n");
-            printf("\033[32mToken Generation: \t \033[1;32m%.2f\033[0m \033[3;32mtok/s\033[0m\n", avg_gen_tps);
-            printf("\033[36mPrompt Processing: \t \033[1;36m%.2f\033[0m \033[3;36mtok/s\033[0m\n", avg_prompt_tps);
-            printf("\033[33mTime to First Token:\t \033[1;33m%.2f\033[0m \033[3;33mms\033[0m\n", avg_ttft_ms);
-            printf("\033[0m");
-        } else {
-            printf("No valid results found in the array\n");
-        }
-    } else {
-        printf("Results is not an array\n");
-    }
-
-    // Ask user for confirmation before sending the data
-    std::string user_cnf;
-    if (params.send_results == SEND_ASK) {
-        user_cnf = getUserConfirmation();
-    }
-
-    // TODO make this a func or something, also retry if it fails to send. 3 times. backoff
-    if (user_cnf == "yes" || user_cnf == "y" || params.send_results == SEND_YES) {
-        printf("\nSubmitting results...\n");
-        Response response = POST("https://mbp.tail73f30.ts.net/api/results", req_payload, {
-            {"Content-Type", "application/json"}
-        });
-
-        if (response.status == 200) {
-            // parse the response json
-            std::pair<Json::Status, Json> json =
-              Json::parse(response.body);
-
-            if (json.first != Json::success) {
-                printf("Error parsing response json\n");
-                return 1;
-            }
-            if (!json.second.isObject()) {
-                printf("Response json is not an object\n");
-                return 1;
-            }
-
-            if (json.second["id"].isNumber()) {
-                printf("Result Link: https://llamascore.vercel.app/result/%d\n", (int)json.second["id"].getNumber());
-            }
-        } else {
-            printf("Error submitting results to the public database. Status: %d\n", response.status);
-        }
-    } else {
-        printf("\nResults Not Submitted.\n");
-    }
+    bool submitted = submitBenchmarkResults(req_payload, params);
 
     return 0;
 }
