@@ -4,7 +4,7 @@
 #include <vector>
 #include "llama.cpp/llama.h"
 
-enum output_formats {CSV, JSON, MARKDOWN, SQL};
+enum output_formats {CSV, JSON, MARKDOWN};
 enum send_results_mode {SEND_ASK, SEND_YES, SEND_NO};
 
 struct cmd_params {

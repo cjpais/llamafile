@@ -5,6 +5,27 @@
 # NVCUDA DLLs are provided by the installation of the windows GPU
 # driver on a Windows system that has a CUDA-capable GPU installed.
 
+TMP=$(mktemp -d) || exit
+
+cp llama.cpp/ggml-cuda.cu \
+   llama.cpp/ggml-cuda.h \
+   llama.cpp/ggml-impl.h \
+   llama.cpp/ggml-alloc.h \
+   llama.cpp/ggml-common.h \
+   llama.cpp/ggml-backend.h \
+   llama.cpp/ggml-backend-impl.h \
+   llama.cpp/ggml.h \
+   llamafile/tinyblas.h \
+   llamafile/tinyblas.cu \
+   llamafile/llamafile.h \
+   llamafile/rocm.bat \
+   llamafile/rocm.sh \
+   llamafile/cuda.bat \
+   llamafile/cuda.sh \
+   "$TMP" || exit
+
+cd "$TMP"
+
 hipcc \
   -O2 \
   -fPIC \
