@@ -190,7 +190,7 @@ static bool submitBenchmarkResults(const std::string& req_payload, const cmd_par
             usleep(wait_time * 1000000);
         }
 
-        Response response = POST("https://mbp.tail73f30.ts.net/api/results", req_payload, {
+        Response response = POST("https://localscore.cjpais.com/api/results", req_payload, {
             {"Content-Type", "application/json"}
         });
 
@@ -207,7 +207,7 @@ static bool submitBenchmarkResults(const std::string& req_payload, const cmd_par
             }
 
             if (json.second["id"].isNumber()) {
-                printf("Result Link: https://llamascore.vercel.app/result/%d\n", 
+                printf("Result Link: https://localscore.cjpais.com/result/%d\n", 
                        (int)json.second["id"].getNumber());
                 return true;
             }
@@ -320,157 +320,178 @@ static void displayResults(Json data) {
     }
 }
 
-int main(int argc, char ** argv) {
-    ShowCrashReports();
+struct SystemData {
+    RuntimeInfo runtime;
+    SystemInfo sys;
+    AcceleratorInfo accelerator;
+};
 
-    std::vector<test_config> baseline_tests = {
+
+// Helper function implementations
+std::vector<test_config> get_baseline_test_configs() {
+    return {
         {1024, 16},     // 64:1 title generation
         {4096, 256},    // 16:1 content summarization
         {2048, 256},    // 8:1  lots of code to fix
         {2048, 768},    // 3:1  standard code chat
         {1024, 1024},   // 1:1  code back and forth
+        {1280, 3072},   // 1:3  reasoning over code
         {384, 1152},    // 1:3  code gen with back and forth
         {64, 1024},     // 1:16 code gen/ideation
-        {16, 1536}      // 1:96 QA, Storytelling
+        {16, 1536}      // 1:96 QA, Storytelling, Reasoning
     };
+}
 
-    LoadZipArgs(&argc, &argv);
-
-    // try to set locale for unicode characters in markdown
-    setlocale(LC_CTYPE, "C.UTF-8");  // [jart]
-
-    cmd_params params = parse_cmd_params(argc, argv);
+void setup_initial_environment(int* argc, char*** argv, cmd_params* params, SystemData* sys_data) {
+    LoadZipArgs(argc, argv);
+    setlocale(LC_CTYPE, "C.UTF-8");
+    *params = parse_cmd_params(*argc, *argv);
     FLAGS_READY = true;
+    acceleratorSelector(params);
+    get_runtime_info(&sys_data->runtime);
+    get_sys_info(&sys_data->sys);
+    get_accelerator_info(&sys_data->accelerator, params);
+}
 
-    // select GPU if multiple GPUs are available and none is specified
-    acceleratorSelector(&params);
-
-    RuntimeInfo runtime_info;
-    get_runtime_info(&runtime_info);
-
-    SystemInfo sys_info;
-    get_sys_info(&sys_info);
-
-    AcceleratorInfo accelerator_info;
-    get_accelerator_info(&accelerator_info, &params);
-
-    // initialize llama.cpp
+void initialize_llama_backend(const cmd_params& params) {
     if (!params.verbose) {
         llama_log_set(llama_null_log_callback, NULL);
         ggml_backend_metal_log_set_callback(llama_null_log_callback, NULL);
     }
     llama_backend_init();
     llama_numa_init(params.numa);
+}
 
+llama_model* load_model(const cmd_params& params) {
     printf("Loading model...\n");
     cmd_params inst = params;
     inst.n_prompt = 1024;
     inst.n_gen = 16;
-    llama_model * lmodel = llama_load_model_from_file(inst.model.c_str(), inst.to_llama_mparams());
-    if (lmodel == NULL) {
+    llama_model* model = llama_load_model_from_file(inst.model.c_str(), inst.to_llama_mparams());
+    if (!model) {
         fprintf(stderr, "%s: error: failed to load model '%s'\n", __func__, inst.model.c_str());
-        return 1;
     }
     printf("Model loaded.\n");
+    return model;
+}
 
-    ModelInfo model_info;
-    get_model_info(&model_info, lmodel);
-
-    std::string req_payload;
-    json_printer* req_printer = new json_printer();
-    req_printer->set_string_output(req_payload);
-    req_printer->print_header(params, accelerator_info, runtime_info, sys_info, model_info);
-
-    printf("Warming up...\n");
-
-    // initialize printer
+std::unique_ptr<printer> create_printer(const cmd_params& params) {
     std::unique_ptr<printer> p;
     switch (params.output_format) {
-        case CSV:
-            p.reset(new csv_printer());
-            break;
-        case JSON:
-            p.reset(new json_printer());
-            break;
-        case MARKDOWN:
-            p.reset(new markdown_printer());
-            break;
-        default:
-            assert(false);
-            exit(1);
+        case CSV: p.reset(new csv_printer()); break;
+        case JSON: p.reset(new json_printer()); break;
+        case MARKDOWN: p.reset(new markdown_printer()); break;
+        default: assert(false); exit(1);
     }
     p->set_file_output(stdout);
+    return p;
+}
 
-    PowerSampler * sampler = getPowerSampler(100, params.main_gpu);
-    pthread_t print_thread;
-
+void perform_warmup(llama_model* model, const cmd_params& params) {
+    cmd_params inst = params;
+    inst.n_prompt = 1024;
+    inst.n_gen = 16;
+    
     llama_context_params cparams = inst.to_llama_cparams();
     cparams.n_ctx = inst.n_prompt + inst.n_gen;
-    llama_context * ctx = llama_new_context_with_model(lmodel, cparams);
-    if (ctx == NULL) {
-        fprintf(stderr, "%s: error: failed to create context with model '%s'\n", __func__, inst.model.c_str());
-        llama_free_model(lmodel);
-        return 1;
+    
+    llama_context* ctx = llama_new_context_with_model(model, cparams);
+    if (!ctx) {
+        fprintf(stderr, "%s: error: failed to create warmup context\n", __func__);
+        exit(1);
     }
-    warmup_run(lmodel, ctx, inst);
+    // ctx free happens in warmup
+    warmup_run(model, ctx, inst);
+}
 
-    p->print_header(params, accelerator_info, runtime_info, sys_info, model_info);
-    for (const auto & test_cfg : baseline_tests) {
+bool run_baseline_tests(const std::vector<test_config>& tests, llama_model* model, 
+                        const cmd_params& params, printer* p, PowerSampler* sampler, 
+                        json_printer* req_printer) {
+    for (const auto& test_cfg : tests) {
+        cmd_params inst = params;
         inst.n_prompt = test_cfg.n_prompt;
         inst.n_gen = test_cfg.n_gen;
 
-        cparams = inst.to_llama_cparams();
+        llama_context_params cparams = inst.to_llama_cparams();
         cparams.n_ctx = test_cfg.n_prompt + test_cfg.n_gen;
 
-        ctx = llama_new_context_with_model(lmodel, cparams);
-        if (ctx == NULL) {
-            fprintf(stderr, "%s: error: failed to create context with model '%s'\n", __func__, inst.model.c_str());
-            llama_free_model(lmodel);
-            return 1;
+        llama_context* ctx = llama_new_context_with_model(model, cparams);
+        if (!ctx) {
+            fprintf(stderr, "%s: error: failed to create context\n", __func__);
+            return false;
         }
 
-        test t(inst, lmodel, ctx, params.reps, sampler);
-
-        update_t_gen_column_args argv = {t, p.get()};
+        test t(inst, model, ctx, params.reps, sampler);
+        
+        update_t_gen_column_args args = {t, p};
         pthread_t update_thread;
-        int rc = pthread_create(&update_thread, NULL, update_t_gen_column, &argv);
-        if (rc) {
+        if (int rc = pthread_create(&update_thread, NULL, update_t_gen_column, &args)) {
             fprintf(stderr, "Error creating pthread: %d\n", rc);
-            return EXIT_FAILURE;
+            return false;
         }
+        
         t.run();
-
         pthread_join(update_thread, NULL);
         req_printer->print_test(t);
-
-        // llama_print_timings(ctx);
-
+        
         llama_free(ctx);
     }
+    return true;
+}
 
-    llama_free_model(lmodel);
-
-    p->print_footer();
-    req_printer->print_footer();
-
-    llama_backend_free();
-
-    std::pair<Json::Status, Json> data =
-              Json::parse(req_payload);
-
-    if (data.first != Json::success) {
-        printf("Error parsing json\n");
-        return 1;
+void process_and_submit_results(const std::string& req_payload, const cmd_params& params) {
+    auto [status, data] = Json::parse(req_payload);
+    if (status != Json::success || !data.isObject()) {
+        printf("Invalid JSON results\n");
+        exit(1);
     }
+    displayResults(data);
+    submitBenchmarkResults(req_payload, params);
+}
 
-    if (!data.second.isObject()) {
-        printf("Json is not an object\n");
+int main(int argc, char** argv) {
+    ShowCrashReports();
+    
+    auto baseline_tests = get_baseline_test_configs();
+    
+    cmd_params params;
+    SystemData sys_data;
+    setup_initial_environment(&argc, &argv, &params, &sys_data);
+    
+    initialize_llama_backend(params);
+    
+    llama_model* lmodel = load_model(params);
+    if (!lmodel) return 1;
+    
+    ModelInfo model_info;
+    get_model_info(&model_info, lmodel);
+    
+    std::string req_payload;
+    json_printer* req_printer = new json_printer();
+    req_printer->set_string_output(req_payload);
+    req_printer->print_header(params, sys_data.accelerator, sys_data.runtime, sys_data.sys, model_info);
+    
+    auto p = create_printer(params);
+    PowerSampler* sampler = getPowerSampler(100, params.main_gpu);
+    
+    perform_warmup(lmodel, params);
+    
+    p->print_header(params, sys_data.accelerator, sys_data.runtime, sys_data.sys, model_info);
+    
+    if (!run_baseline_tests(baseline_tests, lmodel, params, p.get(), sampler, req_printer)) {
+        llama_free_model(lmodel);
+        llama_backend_free();
         return 1;
     }
     
-    displayResults(data.second);
-
-    bool submitted = submitBenchmarkResults(req_payload, params);
-
+    llama_free_model(lmodel);
+    p->print_footer();
+    req_printer->print_footer();
+    
+    llama_backend_free();
+    
+    process_and_submit_results(req_payload, params);
+    delete req_printer;
+    
     return 0;
 }
