@@ -83,7 +83,7 @@ void* update_t_gen_column(void* args) {
     printer* p = argv->p;
 
     // Check if printer is markdown printer
-    markdown_printer* md_printer = dynamic_cast<markdown_printer*>(p);
+    console_printer* md_printer = dynamic_cast<console_printer*>(p);
     if (!md_printer) {
         // For non-markdown printers, wait until test is completed
         while (!t.test_completed) {
@@ -407,7 +407,7 @@ std::unique_ptr<printer> create_printer(const cmd_params& params) {
     switch (params.output_format) {
         case CSV: p.reset(new csv_printer()); break;
         case JSON: p.reset(new json_printer()); break;
-        case MARKDOWN: p.reset(new markdown_printer()); break;
+        case CONSOLE: p.reset(new console_printer()); break;
         default: assert(false); exit(1);
     }
     p->set_file_output(stdout);

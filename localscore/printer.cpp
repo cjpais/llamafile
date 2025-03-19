@@ -148,7 +148,7 @@ void json_printer::print_footer() {
     writer->write("}");
 }
 
-int markdown_printer::get_field_width(const std::string & field) {
+int console_printer::get_field_width(const std::string & field) {
     if (field == "model") {
         return -30;
     }
@@ -179,7 +179,7 @@ int markdown_printer::get_field_width(const std::string & field) {
     return width;
 }
 
-std::string markdown_printer::get_field_display_name(const std::string & field) {
+std::string console_printer::get_field_display_name(const std::string & field) {
     if (field == "n_gpu_layers") {
         return "ngl";
     }
@@ -207,7 +207,7 @@ std::string markdown_printer::get_field_display_name(const std::string & field) 
     return field;
 }
 
-int markdown_printer::calculate_total_width() const {
+int console_printer::calculate_total_width() const {
     int total_width = 0;
     for (const auto & field : fields) {
         int width = get_field_width(field);
@@ -220,7 +220,7 @@ int markdown_printer::calculate_total_width() const {
     return total_width;
 }    
 
-void markdown_printer::print_header(const cmd_params & params, AcceleratorInfo accelerator_info, RuntimeInfo runtime_info, SystemInfo sys_info, ModelInfo model_info) {
+void console_printer::print_header(const cmd_params & params, AcceleratorInfo accelerator_info, RuntimeInfo runtime_info, SystemInfo sys_info, ModelInfo model_info) {
     fields.emplace_back("test");
     fields.emplace_back("run number");
     fields.emplace_back("avg time");
@@ -283,7 +283,7 @@ void markdown_printer::print_header(const cmd_params & params, AcceleratorInfo a
     writer->write("\n");
 }
 
-void markdown_printer::print_test(const test & t) {
+void console_printer::print_test(const test & t) {
     std::map<std::string, std::string> vmap = t.get_map();
 
     float power = t.get_power();
@@ -398,7 +398,7 @@ void markdown_printer::print_test(const test & t) {
     writer->write("\n");
 }
 
-void markdown_printer::print_footer() {
+void console_printer::print_footer() {
     int total_width = calculate_total_width();
     std::string border(total_width, '-');
     border[0] = '+';

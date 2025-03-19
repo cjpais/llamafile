@@ -80,7 +80,7 @@ private:
                      const std::vector<std::string>& values);
 };
 
-struct markdown_printer : public printer {
+struct console_printer : public printer {
     std::vector<std::string> fields;
 
     static int get_field_width(const std::string& field);

@@ -27,7 +27,7 @@ static const cmd_params cmd_params_defaults = {
     /* reps          */ 1,
     /* verbose       */ false,
     /* send_results  */ SEND_ASK,
-    /* output_format */ MARKDOWN,
+    /* output_format */ CONSOLE,
 };
 
 llama_model_params cmd_params::to_llama_mparams() const {
@@ -119,7 +119,7 @@ cmd_params parse_cmd_params(int argc, char ** argv) {
                 std::string fmt = argv[i];
                 if (fmt == "csv") params.output_format = CSV;
                 else if (fmt == "json") params.output_format = JSON;
-                else if (fmt == "md") params.output_format = MARKDOWN;
+                else if (fmt == "console") params.output_format = CONSOLE;
                 else {
                     invalid_param = true;
                 }
@@ -176,7 +176,7 @@ static const char * output_format_str(output_formats format) {
     switch (format) {
         case CSV:      return "csv";
         case JSON:     return "json";
-        case MARKDOWN: return "md";
+        case CONSOLE:  return "console";
         default: GGML_ASSERT(!"invalid output format");
     }
 }
@@ -191,7 +191,7 @@ void print_usage(int /* argc */, char ** argv) {
     printf("  -g, --gpu <auto|amd|apple|nvidia|disabled> (default: \"auto\")\n");
     printf("  -i, --gpu-index <i>                        select GPU by index (default: %d)\n", cmd_params_defaults.main_gpu);
     printf("  --list-gpus                                list available GPUs and exit\n");
-    printf("  -o, --output <csv|json|md|sql>             (default: %s)\n", output_format_str(cmd_params_defaults.output_format));
+    printf("  -o, --output <csv|json|console>            (default: %s)\n", output_format_str(cmd_params_defaults.output_format));
     printf("  -v, --verbose                              verbose output (default: %s)\n", cmd_params_defaults.verbose ? "yes" : "no");
     printf("  -y, --send-results                         send results without confirmation\n");
     printf("  -n, --no-send-results                      disable sending results\n");
