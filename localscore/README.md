@@ -2,6 +2,8 @@
 
 LocalScore is an open-source benchmarking tool designed to measure how fast Large Language Models (LLMs) run on your specific hardware. It also provides a public database for benchmark results, helping you make informed decisions about running AI models locally.
 
+![Example of the LocalScore CLI](localscore-example.jpeg)
+
 ## Features
 
 - **Comprehensive Performance Metrics**: Measures prompt processing speed, generation speed, and time to first token
