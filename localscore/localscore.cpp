@@ -131,6 +131,7 @@ __attribute__((__constructor__(101))) static void init(void) {
 }
 
 static void warmup_run(llama_model *model, llama_context *ctx, cmd_params inst) {
+    printf("Warming up...... ");
     int n_batch = inst.n_batch;
     int n_processed = 0;
     int n_prompt = inst.n_prompt;
@@ -390,7 +391,7 @@ void initialize_llama_backend(const cmd_params& params) {
 }
 
 llama_model* load_model(const cmd_params& params) {
-    printf("Loading model...\n");
+    printf("Loading model... ");
     cmd_params inst = params;
     inst.n_prompt = 1024;
     inst.n_gen = 16;
