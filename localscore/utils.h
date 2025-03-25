@@ -163,6 +163,15 @@ namespace utils {
         fprintf(stream, "\n");
     }
 
+    inline void sanitize_string(char *dest, const char *src, size_t max_len) {
+        size_t i = 0;
+        for (; i < max_len - 1 && src[i]; i++) {
+            // Only allow printable ASCII
+            dest[i] = (src[i] >= 32 && src[i] < 127) ? src[i] : ' ';
+        }
+        dest[i] = '\0';
+    }
+
 } // namespace utils
 
 #endif // UTILS_H

@@ -183,11 +183,11 @@ void get_sys_info(SystemInfo* info) {
         return;
     }
 
-    strncpy(info->kernel_type, names.sysname, MAX_STRING_LENGTH - 1);
-    strncpy(info->kernel_release, names.release, MAX_STRING_LENGTH - 1);
+    utils::sanitize_string(info->kernel_type, names.sysname, MAX_STRING_LENGTH);
+    utils::sanitize_string(info->kernel_release, names.release, MAX_STRING_LENGTH);
     // TODO on darwin we might want to get from systemprofiler SPSoftwareDataType os_version
-    strncpy(info->version, names.version, MAX_STRING_LENGTH - 1);
-    strncpy(info->system_architecture, names.machine, MAX_STRING_LENGTH - 1);
+    utils::sanitize_string(info->version, names.version, MAX_STRING_LENGTH);
+    utils::sanitize_string(info->system_architecture, names.machine, MAX_STRING_LENGTH);
 
     std::string cpu_info = get_cpu_info();
     strncpy(info->cpu, cpu_info.c_str(), MAX_STRING_LENGTH - 1);
