@@ -2,7 +2,17 @@
 
 LocalScore is an open-source benchmarking tool designed to measure how fast Large Language Models (LLMs) run on your specific hardware. It also provides a public database for benchmark results, helping you make informed decisions about running AI models locally.
 
+You can view the leaderboard at [localscore.ai](https://localscore.ai)
+
 ![Example of the LocalScore CLI](localscore-example.jpeg)
+
+<p align="center">
+<i>
+<br />
+<a href="https://builders.mozilla.org/"><img src="../llamafile/mozilla-logo-bw-rgb.png" width="200"></a><br/>
+<a href="https://localscore.ai">LocalScore</a> is a <a href="https://builders.mozilla.org/">Mozilla Builders</a> project.
+</i>
+</p>
 
 ## Features
 
@@ -21,7 +31,7 @@ LocalScore evaluates three key performance metrics:
 
 These metrics are combined into a single **LocalScore** value using a geometric mean:
 
-$\text{score} = 10 \cdot \sqrt[3]{\text{avg\_prompt\_tps} \cdot \text{avg\_gen\_tps} \cdot \frac{1000}{\text{avg\_ttft\_ms}}}$
+$`\text{score} = 10 \cdot \sqrt[3]{\text{avg\_prompt\_tps} \cdot \text{avg\_gen\_tps} \cdot \frac{1000}{\text{avg\_ttft\_ms}}}`$
 
 As a general guideline:
 - A score of 1,000+ is excellent
