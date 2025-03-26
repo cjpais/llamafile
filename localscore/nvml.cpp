@@ -126,6 +126,8 @@ bool nvml_init() {
     void *lib = cosmo_dlopen(dso, RTLD_LAZY);
     bool ok = true;
 
+    // TODO we need a more robust way to import symbols and versions.
+    // this may end in a segfault currently.
     import_nvml_function(lib, "nvmlInit_v2", &nvml.nvmlInit_v2, &ok);
     import_nvml_function(lib, "nvmlDeviceGetCount_v2", &nvml.nvmlDeviceGetCount_v2, &ok);
     import_nvml_function(lib, "nvmlDeviceGetHandleByIndex_v2", &nvml.nvmlDeviceGetHandleByIndex_v2, &ok);

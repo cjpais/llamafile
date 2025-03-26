@@ -219,21 +219,22 @@ double DummyPowerSampler::getEnergyConsumed() {
 PowerSampler* getPowerSampler(long sample_length_ms, unsigned int main_gpu) {
     if (IsXnu()) {
         return new ApplePowerSampler(sample_length_ms);
-    } else if (llamafile_has_gpu() && FLAG_gpu != LLAMAFILE_GPU_DISABLE) {
-        if (llamafile_has_amd_gpu()) {
-            // TODO change this to AMD power sampler when it works.
-            return new DummyPowerSampler(sample_length_ms);
-        } else if (llamafile_has_cuda()) {
-            try {
-                // TODO this will blow up on heterogeneous systems (AMD + NVIDIA hybrids probably)
-                return new NvidiaPowerSampler(sample_length_ms, main_gpu);
-            } catch (const std::exception& e) {
-                // Log the error if needed
-                printf("NVIDIA Power Monitoring Failed failed: %s\n", e.what());
-                return new DummyPowerSampler(sample_length_ms);
-            }
-        }
-    }
+    } 
+    // else if (llamafile_has_gpu() && FLAG_gpu != LLAMAFILE_GPU_DISABLE) {
+        // if (llamafile_has_amd_gpu()) {
+        //     // TODO change this to AMD power sampler when it works.
+        //     return new DummyPowerSampler(sample_length_ms);
+        // } else if (llamafile_has_cuda()) {
+        //     try {
+        //         // TODO this will blow up on heterogeneous systems (AMD + NVIDIA hybrids probably)
+        //         return new NvidiaPowerSampler(sample_length_ms, main_gpu);
+        //     } catch (const std::exception& e) {
+        //         // Log the error if needed
+        //         printf("NVIDIA Power Monitoring Failed failed: %s\n", e.what());
+        //         return new DummyPowerSampler(sample_length_ms);
+        //     }
+        // }
+    // }
 
     return new DummyPowerSampler(sample_length_ms);
 }
