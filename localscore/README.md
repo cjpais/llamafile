@@ -162,6 +162,10 @@ This data helps build a comprehensive database of hardware performance for LLM i
 - **Single-GPU Focus**: Currently, LocalScore only supports single-GPU setups, which represents the most practical approach for most users running LLMs locally.
 - **Early Development**: LocalScore is in relatively early development, so you may encounter occasional issues. Please file a GitHub issue if you encounter any problems.
 
+## Troubleshooting
+
+Check out the [Troubleshooting](localscore/doc/Troubleshooting.md) doc for common issues and solutions.
+
 ## Contributing
 
 Contributions are welcome! See the main [Llamafile README](https://github.com/Mozilla-Ocho/llamafile) for building instructions and development guidelines.
@@ -171,7 +175,6 @@ Contributions are welcome! See the main [Llamafile README](https://github.com/Mo
 LocalScore was created with support from [Mozilla Builders](https://builders.mozilla.org/) and builds upon the excellent work of:
 - [llama.cpp](https://github.com/ggml-org/llama.cpp)
 - [Llamafile](https://github.com/Mozilla-Ocho/llamafile)
-- [Llama Bench](https://github.com/link-to-llama-bench) (the command-line utility from llama.cpp which was forked to create LocalScore)
 
 ## License
 
@@ -180,5 +183,5 @@ LocalScore is released under the [MIT License](LICENSE).
 ## Links
 
 - [Official Website](https://localscore.ai)
-- [GitHub Repository](https://github.com/Mozilla-Ocho/llamafile/tree/cjpais/localscore/llama.cpp/localscore)
+- [GitHub Repository](localscore)
 - [Issue Tracker](https://github.com/Mozilla-Ocho/llamafile/issues)
