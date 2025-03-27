@@ -224,7 +224,7 @@ void console_printer::print_header(const cmd_params & params, AcceleratorInfo ac
     fields.emplace_back("test");
     fields.emplace_back("run number");
     fields.emplace_back("avg time");
-    fields.emplace_back("power");
+    // fields.emplace_back("power");
     fields.emplace_back("tokens processed");
     fields.emplace_back("pp t/s");
     fields.emplace_back("tg t/s");
@@ -237,36 +237,39 @@ void console_printer::print_header(const cmd_params & params, AcceleratorInfo ac
     border[total_width-1] = '+';
     writer->write("%s\n", border.c_str());
 
-    // Create the GPU info string and calculate padding
+    // Create the GPU info string
     char gpu_info_str[256];
-    
-    
     int content_length = snprintf(gpu_info_str, sizeof(gpu_info_str), 
                                 "%s - %.2f GiB", 
                                 accelerator_info.name, 
                                 accelerator_info.total_memory_gb);
-    int padding = (total_width - 2 - content_length) / 2;
     
-    // Print the GPU info
+    // Calculate left and right padding to properly center the text
+    int left_padding = (total_width - 2 - content_length) / 2;
+    int right_padding = total_width - 2 - content_length - left_padding;
+    
+    // Print the GPU info with correct padding
     writer->write("|%*s%s%*s|\n",
-        padding, "", 
+        left_padding, "", 
         gpu_info_str,
-        padding + (content_length % 2 == 0 ? 0 : 1), "");
+        right_padding, "");
 
-    // Create the model info string and calculate padding
+    // Create the model info string
     char model_info_str[256];
     content_length = snprintf(model_info_str, sizeof(model_info_str), 
                                 "%s - %s", 
                                 model_info.name, 
                                 model_info.quant);
-    padding = (total_width - 2 - content_length) / 2;
     
-    // Print the model info
+    // Calculate left and right padding separately
+    left_padding = (total_width - 2 - content_length) / 2;
+    right_padding = total_width - 2 - content_length - left_padding;
+    
+    // Print the model info with correct padding
     writer->write("|%*s%s%*s|\n",
-        padding, "", 
+        left_padding, "", 
         model_info_str,
-        padding + (content_length % 2 == 0 ? 0 : 1), "");
-
+        right_padding, "");
 
     writer->write("%s\n", border.c_str());
 
@@ -286,7 +289,7 @@ void console_printer::print_header(const cmd_params & params, AcceleratorInfo ac
 void console_printer::print_test(const test & t) {
     std::map<std::string, std::string> vmap = t.get_map();
 
-    float power = t.get_power();
+    // float power = t.get_power();
 
     writer->write("|");
     for (const auto & field : fields) {

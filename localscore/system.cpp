@@ -172,7 +172,7 @@ double get_mem_gb() {
         return 0.0;
     }
 
-    return si.totalram * si.mem_unit / 1073741824.0;
+    return utils::round_to_decimal(si.totalram * si.mem_unit / 1073741824.0, 1);
 }
 
 void get_sys_info(SystemInfo* info) {
@@ -201,7 +201,7 @@ void get_sys_info(SystemInfo* info) {
     fprintf(stderr, "%-20s %s\n", "Version:", info->version);
     fprintf(stderr, "%-20s %s\n", "System Architecture:", info->system_architecture);
     fprintf(stderr, "%-20s %s\n", "CPU:", info->cpu);
-    fprintf(stderr, "%-20s %.2f GiB\n", "RAM:", info->ram_gb);
+    fprintf(stderr, "%-20s %.1f GiB\n", "RAM:", info->ram_gb);
     fprintf(stderr, "\n======================================================================\n\n");
 }
 
@@ -214,11 +214,13 @@ void get_accelerator_info(AcceleratorInfo* info, cmd_params * params) {
             for (int i = 0; i < count; i++) {
                 struct ggml_cuda_device_properties props;
                 ggml_backend_cuda_get_device_properties(i, &props);
-                    // printf("Total memory: %lld bytes\n", props.totalGlobalMem);
+
+                double rounded_memory_gb = utils::round_to_decimal(props.totalGlobalMem / 1073741824.0, 1);
+
                 if (i == params->main_gpu) {
                     strncpy(info->name, props.name, MAX_STRING_LENGTH - 1);
 
-                    info->total_memory_gb = props.totalGlobalMem / 1073741824.0;
+                    info->total_memory_gb = rounded_memory_gb;
                     info->core_count = props.multiProcessorCount;
                     info->capability = atof(props.compute);
                     strncpy(info->manufacturer, llamafile_has_amd_gpu() ? "AMD" : "NVIDIA", MAX_STRING_LENGTH - 1);
@@ -235,7 +237,7 @@ void get_accelerator_info(AcceleratorInfo* info, cmd_params * params) {
                 }
 
                 fprintf(stderr, "%-26s %s\n", "GPU Name:", props.name);
-                fprintf(stderr, "%-26s %.2f GiB\n", "VRAM:", props.totalGlobalMem / 1073741824.0);
+                fprintf(stderr, "%-26s %.1f GiB\n", "VRAM:", rounded_memory_gb);
                 fprintf(stderr, "%-26s %d\n", "Streaming Multiprocessors:", props.multiProcessorCount);
                 fprintf(stderr, "%-26s %.1f\n", "CUDA Capability:", atof(props.compute));
                 fprintf(stderr, "\n======================================================================\n\n\033[0m");
@@ -259,11 +261,12 @@ void get_accelerator_info(AcceleratorInfo* info, cmd_params * params) {
             ggml_backend_t result = ggml_backend_metal_init();
 
             ggml_backend_metal_get_device_properties(result, &props);
+            double rounded_memory_gb = utils::round_to_decimal(props.memory, 1);
 
             std::string cpu_info = get_cpu_info();
             cpu_info += "+" + num_cores + "GPU";
             strncpy(info->name, cpu_info.c_str(), MAX_STRING_LENGTH - 1);
-            info->total_memory_gb = props.memory;
+            info->total_memory_gb = rounded_memory_gb;
             info->core_count = props.core_count;
             info->capability = props.metal_version;
             strncpy(info->manufacturer, "Apple", MAX_STRING_LENGTH - 1);
@@ -271,7 +274,7 @@ void get_accelerator_info(AcceleratorInfo* info, cmd_params * params) {
 
             fprintf(stderr, "\033[0;32m===== GPU information =====\n\n");
             fprintf(stderr, "%-26s %s\n", "GPU Name:", props.name);
-            fprintf(stderr, "%-26s %.2f GiB\n", "VRAM:", props.memory);
+            fprintf(stderr, "%-26s %.1f GiB\n", "VRAM:", rounded_memory_gb);
             fprintf(stderr, "%-26s %d\n", "Core Count:", props.core_count);
             fprintf(stderr, "%-26s %d\n", "Metal Version:", props.metal_version);
             fprintf(stderr, "%-26s %d\n", "GPU Family:", props.gpu_family);

@@ -14,6 +14,7 @@
 #include <stdexcept>
 #include <string.h>
 #include <stdarg.h>
+#include <math.h>
 
 namespace utils {
 
@@ -171,6 +172,19 @@ namespace utils {
         }
         dest[i] = '\0';
     }
+
+    /**
+    * Rounds a double value to the specified number of decimal places.
+    * 
+    * @param value The value to round
+    * @param decimal_places The number of decimal places to round to
+    * @return The rounded value
+    */
+    inline double round_to_decimal(double value, int decimal_places) {
+        double multiplier = pow(10.0, decimal_places);
+        return round(value * multiplier) / multiplier;
+    }
+
 
 } // namespace utils
 
