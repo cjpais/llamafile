@@ -240,7 +240,7 @@ void console_printer::print_header(const cmd_params & params, AcceleratorInfo ac
     // Create the GPU info string
     char gpu_info_str[256];
     int content_length = snprintf(gpu_info_str, sizeof(gpu_info_str), 
-                                "%s - %.2f GiB", 
+                                "%s - %.1f GiB", 
                                 accelerator_info.name, 
                                 accelerator_info.total_memory_gb);
     

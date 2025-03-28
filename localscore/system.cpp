@@ -215,7 +215,12 @@ void get_accelerator_info(AcceleratorInfo* info, cmd_params * params) {
                 struct ggml_cuda_device_properties props;
                 ggml_backend_cuda_get_device_properties(i, &props);
 
-                double rounded_memory_gb = utils::round_to_decimal(props.totalGlobalMem / 1073741824.0, 1);
+                if (params->verbose) {
+                    printf("Raw GPU %d Memory %lld Bytes, %.2f GiB\n", i, props.totalGlobalMem, props.totalGlobalMem / 1073741824.0);
+                }
+
+                // TODO it would be much better to query NVML directly instead and similar for rocm
+                double rounded_memory_gb = utils::round_to_decimal(props.totalGlobalMem / 1073741824.0, 0);
 
                 if (i == params->main_gpu) {
                     strncpy(info->name, props.name, MAX_STRING_LENGTH - 1);
@@ -261,12 +266,11 @@ void get_accelerator_info(AcceleratorInfo* info, cmd_params * params) {
             ggml_backend_t result = ggml_backend_metal_init();
 
             ggml_backend_metal_get_device_properties(result, &props);
-            double rounded_memory_gb = utils::round_to_decimal(props.memory, 1);
 
             std::string cpu_info = get_cpu_info();
             cpu_info += "+" + num_cores + "GPU";
             strncpy(info->name, cpu_info.c_str(), MAX_STRING_LENGTH - 1);
-            info->total_memory_gb = rounded_memory_gb;
+            info->total_memory_gb = get_mem_gb();
             info->core_count = props.core_count;
             info->capability = props.metal_version;
             strncpy(info->manufacturer, "Apple", MAX_STRING_LENGTH - 1);
@@ -274,7 +278,7 @@ void get_accelerator_info(AcceleratorInfo* info, cmd_params * params) {
 
             fprintf(stderr, "\033[0;32m===== GPU information =====\n\n");
             fprintf(stderr, "%-26s %s\n", "GPU Name:", props.name);
-            fprintf(stderr, "%-26s %.1f GiB\n", "VRAM:", rounded_memory_gb);
+            fprintf(stderr, "%-26s %.1f GiB\n", "VRAM:", info->total_memory_gb);
             fprintf(stderr, "%-26s %d\n", "Core Count:", props.core_count);
             fprintf(stderr, "%-26s %d\n", "Metal Version:", props.metal_version);
             fprintf(stderr, "%-26s %d\n", "GPU Family:", props.gpu_family);
