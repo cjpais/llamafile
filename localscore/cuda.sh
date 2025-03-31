@@ -44,7 +44,7 @@ cd "$TMP"
   -DGGML_CUDA_PEER_MAX_BATCH_SIZE=128 \
   -DGGML_MINIMIZE_CODE_SIZE \
   -DGGML_USE_CUBLAS \
-  -o ~/ggml-cuda-localscore.so \
+  -o ~/ggml-cuda.localscore.so \
   ggml-cuda.cu \
   -lcublas \
   -lcuda
